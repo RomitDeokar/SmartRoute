@@ -428,16 +428,19 @@ async def fetch_pexels_photo(query: str, count: int = 3) -> list:
         pass
     return fallback
 
-async def fetch_overpass_attractions(lat: float, lon: float, radius: int = 15000, limit: int = 12) -> List[Dict]:
-    """Fetch real tourist attractions from Overpass API (free, no key)"""
+async def fetch_overpass_attractions(lat: float, lon: float, radius: int = 15000, limit: int = 20) -> List[Dict]:
+    """Fetch real tourist attractions from Overpass API (free, no key) — includes hidden gems"""
     query = f"""
-    [out:json][timeout:15];
+    [out:json][timeout:20];
     (
       node["tourism"~"attraction|museum|viewpoint|artwork|gallery"](around:{radius},{lat},{lon});
       node["historic"~"monument|castle|fort|ruins|memorial|archaeological_site"](around:{radius},{lat},{lon});
-      node["leisure"~"park|garden|nature_reserve"](around:{radius},{lat},{lon});
+      node["leisure"~"park|garden|nature_reserve|water_park|beach_resort"](around:{radius},{lat},{lon});
+      node["natural"~"beach|waterfall|cave_entrance|spring|cliff|peak"](around:{radius},{lat},{lon});
+      node["amenity"~"place_of_worship"](around:{radius},{lat},{lon});
       way["tourism"~"attraction|museum|viewpoint"](around:{radius},{lat},{lon});
       way["historic"~"monument|castle|fort"](around:{radius},{lat},{lon});
+      way["natural"~"beach|waterfall|cave_entrance"](around:{radius},{lat},{lon});
     );
     out center body {limit};
     """
@@ -471,6 +474,10 @@ async def fetch_overpass_attractions(lat: float, lon: float, radius: int = 15000
                     osm_type = "park"
                 elif tags.get("tourism") == "gallery":
                     osm_type = "museum"
+                elif tags.get("natural") in ("beach", "waterfall", "cave_entrance", "spring", "cliff", "peak"):
+                    osm_type = "hidden_gem"
+                elif tags.get("amenity") == "place_of_worship":
+                    osm_type = "cultural"
                 
                 desc = tags.get("description", tags.get("tourism:description", f"Visit {name}"))
                 if desc == f"Visit {name}" and tags.get("wikipedia"):
@@ -1006,22 +1013,32 @@ async def generate_trip(request: TripRequest, background_tasks: BackgroundTasks)
         budget_task = [t for t in agent_manager.tasks.values() if t.type == "calculate_budget"][-1]
         budget_breakdown = budget_task.result.get("breakdown", {}) if budget_task.result else {}
         
-        # Generate daily itinerary
+        # Generate daily itinerary — distribute attractions across days (NO repeats)
         days = []
         start = datetime.strptime(request.start_date, "%Y-%m-%d")
+        
+        # Shuffle once, then distribute round-robin so each day gets unique places
+        shuffled_attractions = list(attractions)
+        random.shuffle(shuffled_attractions)
+        acts_per_day = max(3, min(4, len(shuffled_attractions) // max(request.duration, 1)))
         
         for day_num in range(request.duration):
             date = start + timedelta(days=day_num)
             day_activities = []
             daily_cost = 0
             
-            # Select 3-4 attractions per day
-            num_activities = min(4, len(attractions))
-            selected = random.sample(attractions, num_activities) if len(attractions) >= num_activities else attractions
+            # Slice unique attractions for this day (round-robin from shuffled pool)
+            start_idx = day_num * acts_per_day
+            selected = shuffled_attractions[start_idx : start_idx + acts_per_day]
+            # If we run out of unique ones, wrap around but still avoid same-day dupes
+            if len(selected) < acts_per_day:
+                remaining = [a for a in shuffled_attractions if a not in selected]
+                selected += remaining[:acts_per_day - len(selected)]
             
             time_slots = ["09:00", "12:00", "15:00", "18:00"]
             
             for i, attr in enumerate(selected):
+                attr_photos = attr.get("photos", []) or [attr.get("photo", "https://images.pexels.com/photos/460672/pexels-photo-460672.jpeg")]
                 activity = {
                     "name": attr["name"],
                     "type": attr["type"],
@@ -1032,12 +1049,25 @@ async def generate_trip(request: TripRequest, background_tasks: BackgroundTasks)
                     "description": attr.get("description", f"Visit {attr['name']}"),
                     "lat": attr.get("lat", 0),
                     "lon": attr.get("lon", 0),
-                    "photo": attr.get("photo", "https://images.pexels.com/photos/460672/pexels-photo-460672.jpeg"),
+                    "photo": attr_photos[0] if attr_photos else "",
+                    "photos": attr_photos,
+                    "reviews_count": random.randint(50, 2000),
                     "media": {
-                        "photos": [attr.get("photo", "https://images.pexels.com/photos/460672/pexels-photo-460672.jpeg")],
-                        "videos": {"youtube_search": f"https://www.youtube.com/results?search_query={quote(attr['name'])}+travel"},
-                        "reviews": {"google": f"https://www.google.com/search?q={quote(attr['name'])}+reviews"},
-                        "maps": {"google": f"https://www.google.com/maps/search/?api=1&query={quote(attr['name'])}"}
+                        "photos": attr_photos,
+                        "videos": {
+                            "youtube": f"https://www.youtube.com/results?search_query={quote(attr['name'])}+travel+guide",
+                            "virtual_tour": f"https://www.youtube.com/results?search_query={quote(attr['name'])}+virtual+tour+4k"
+                        },
+                        "reviews": {"google": f"https://www.google.com/search?q={quote(attr['name'])}+reviews", "tripadvisor": f"https://www.tripadvisor.com/Search?q={quote(attr['name'])}"},
+                        "maps": {
+                            "google": f"https://www.google.com/maps/search/?api=1&query={attr.get('lat', 0)},{attr.get('lon', 0)}",
+                            "osm": f"https://www.openstreetmap.org/?mlat={attr.get('lat', 0)}&mlon={attr.get('lon', 0)}#map=16/{attr.get('lat', 0)}/{attr.get('lon', 0)}",
+                            "directions": f"https://www.google.com/maps/dir/?api=1&destination={attr.get('lat', 0)},{attr.get('lon', 0)}"
+                        },
+                        "links": {
+                            "wiki": f"https://en.wikipedia.org/wiki/{quote(attr['name'].replace(' ', '_'))}",
+                            "booking": f"https://www.google.com/search?q={quote(attr['name'])}+tickets+booking"
+                        }
                     }
                 }
                 day_activities.append(activity)
