@@ -410,91 +410,201 @@ async def geocode_city(city: str) -> Optional[Dict]:
         print(f"⚠️ Geocoding failed for {city}: {e}")
     return None
 
-async def fetch_wikimedia_photos(query: str, count: int = 3) -> list:
-    """Fetch real photos from Wikimedia Commons (free, no API key)"""
+async def fetch_geo_photos(lat: float, lon: float, count: int = 3) -> list:
+    """Fetch real photos near a GPS coordinate from Wikimedia Commons geosearch"""
     try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            # Search Wikimedia Commons for images of this place
+        async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get("https://commons.wikimedia.org/w/api.php", params={
                 "action": "query",
                 "format": "json",
-                "generator": "images",
-                "titles": query,
-                "gimlimit": str(count),
+                "generator": "geosearch",
+                "ggscoord": f"{lat}|{lon}",
+                "ggsradius": "1000",
+                "ggslimit": str(min(count * 3, 20)),
+                "ggsnamespace": "6",
                 "prop": "imageinfo",
-                "iiprop": "url|mime",
+                "iiprop": "url|mime|extmetadata",
                 "iiurlwidth": "800"
             })
             data = resp.json()
             pages = data.get("query", {}).get("pages", {})
             photos = []
             for page in pages.values():
-                info = page.get("imageinfo", [{}])[0]
+                info_list = page.get("imageinfo", [])
+                if not info_list:
+                    continue
+                info = info_list[0]
                 mime = info.get("mime", "")
                 if "image" in mime and "svg" not in mime:
                     url = info.get("thumburl") or info.get("url", "")
-                    if url:
+                    if url and ".svg" not in url.lower():
                         photos.append(url)
             if photos:
                 return photos[:count]
-    except:
-        pass
-    
-    # Fallback: search Wikimedia using opensearch
+    except Exception as e:
+        print(f"  📸 Geosearch fallback: {e}")
+    return []
+
+async def fetch_wiki_photo(name: str, count: int = 1) -> list:
+    """Try to get photo from Wikipedia article for this place"""
     try:
         async with httpx.AsyncClient(timeout=8) as client:
             resp = await client.get("https://en.wikipedia.org/w/api.php", params={
                 "action": "query",
                 "format": "json",
-                "titles": query,
-                "prop": "pageimages",
+                "titles": name,
+                "prop": "pageimages|extracts",
                 "piprop": "original|thumbnail",
-                "pithumbsize": "800"
+                "pithumbsize": "800",
+                "exintro": True,
+                "explaintext": True,
+                "exsentences": 2
             })
             data = resp.json()
             pages = data.get("query", {}).get("pages", {})
             for page in pages.values():
+                if int(page.get("pageid", -1)) < 0:
+                    continue
                 thumb = page.get("thumbnail", {}).get("source")
                 original = page.get("original", {}).get("source")
                 url = thumb or original
                 if url:
-                    return [url]
+                    desc = page.get("extract", "")
+                    return [url], desc
     except:
         pass
-    return []
+    return [], ""
 
-async def fetch_place_photos(query: str, city: str = "", count: int = 3) -> list:
-    """Get real photos: tries Wikimedia first, then Pexels as fallback"""
-    # Try Wikimedia Commons with place name
-    photos = await fetch_wikimedia_photos(query, count)
-    if photos:
-        return photos
+async def fetch_place_photos(name: str, lat: float, lon: float, city: str = "", count: int = 3) -> tuple:
+    """Get real photos using GPS coordinates first, then Wikipedia, then Pexels"""
+    desc_extra = ""
     
-    # Try Wikipedia with place + city
-    if city:
-        photos = await fetch_wikimedia_photos(f"{query} {city}", count)
+    # 1. Wikimedia Commons geosearch — actual photos near these coordinates
+    if lat and lon:
+        photos = await fetch_geo_photos(lat, lon, count)
         if photos:
-            return photos
+            return photos, desc_extra
     
-    # Fallback to Pexels with specific query
-    fallback = [f"https://source.unsplash.com/800x600/?{query.replace(' ', '+')},{city.replace(' ', '+')}"]
-    if not PEXELS_API_KEY:
-        return fallback
+    # 2. Wikipedia article — get main image + description
+    wiki_result, wiki_desc = await fetch_wiki_photo(name)
+    if wiki_result:
+        return wiki_result, wiki_desc
+    
+    # 3. Try with city qualifier
+    if city:
+        wiki_result, wiki_desc = await fetch_wiki_photo(f"{name}, {city}")
+        if wiki_result:
+            return wiki_result, wiki_desc
+    
+    # 4. Pexels with specific query
+    if PEXELS_API_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get("https://api.pexels.com/v1/search", params={
+                    "query": f"{name} {city} landmark tourism", "per_page": count, "orientation": "landscape"
+                }, headers={"Authorization": PEXELS_API_KEY})
+                data = resp.json()
+                pexels_photos = data.get("photos", [])
+                if pexels_photos:
+                    return [p["src"]["large"] for p in pexels_photos], desc_extra
+        except:
+            pass
+    
+    # 5. Last resort: Unsplash source URL
+    q = f"{name.replace(' ', '+')},{city.replace(' ', '+')}" if city else name.replace(' ', '+')
+    return [f"https://source.unsplash.com/800x600/?{q}"], desc_extra
+
+async def fetch_opentripmap_places(lat: float, lon: float, radius: int = 15000, limit: int = 25) -> List[Dict]:
+    """Fetch curated tourist places from OpenTripMap API (free, better quality than raw Overpass)"""
+    base_url = "https://api.opentripmap.com/0.1/en/places"
+    # OpenTripMap free tier — no API key needed for basic geosearch
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get("https://api.pexels.com/v1/search", params={
-                "query": f"{query} {city} place landmark", "per_page": count, "orientation": "landscape"
-            }, headers={"Authorization": PEXELS_API_KEY})
-            data = resp.json()
-            pexels_photos = data.get("photos", [])
-            if pexels_photos:
-                return [p["src"]["large"] for p in pexels_photos]
-    except:
-        pass
-    return fallback
+        async with httpx.AsyncClient(timeout=15) as client:
+            # Get places sorted by rating
+            resp = await client.get(f"{base_url}/radius", params={
+                "radius": radius,
+                "lon": lon,
+                "lat": lat,
+                "kinds": "interesting_places,cultural,historic,natural,architecture,religion,museums",
+                "rate": "2",  # minimum rating 2 (decent quality)
+                "limit": limit,
+                "format": "json"
+            })
+            places_list = resp.json()
+            if not isinstance(places_list, list):
+                return []
+            
+            attractions = []
+            seen_names = set()
+            
+            for place in places_list:
+                xid = place.get("xid", "")
+                name = place.get("name", "").strip()
+                if not name or len(name) < 3 or name in seen_names:
+                    continue
+                
+                # Filter out generic/auto-generated names
+                generic_words = ["historic center", "main museum", "central market", "bus station", 
+                                "railway station", "airport", "hospital", "school", "college",
+                                "university", "bank", "atm", "pharmacy", "gas station", "petrol"]
+                if any(gw in name.lower() for gw in generic_words):
+                    continue
+                
+                seen_names.add(name)
+                
+                # Get detailed info for this place
+                detail = {}
+                try:
+                    detail_resp = await client.get(f"{base_url}/xid/{xid}")
+                    detail = detail_resp.json()
+                except:
+                    pass
+                
+                p_lat = place.get("point", {}).get("lat", lat)
+                p_lon = place.get("point", {}).get("lon", lon)
+                
+                # Determine type
+                kinds = place.get("kinds", "")
+                osm_type = "attraction"
+                if "museum" in kinds: osm_type = "museum"
+                elif "historic" in kinds or "fortifications" in kinds: osm_type = "historic"
+                elif "natural" in kinds or "beaches" in kinds: osm_type = "hidden_gem"
+                elif "religion" in kinds: osm_type = "cultural"
+                elif "architecture" in kinds: osm_type = "architecture"
+                elif "gardens" in kinds or "parks" in kinds: osm_type = "park"
+                
+                # Get description from detail or Wikipedia
+                desc = detail.get("wikipedia_extracts", {}).get("text", "")
+                if not desc:
+                    desc = detail.get("info", {}).get("descr", f"Visit {name}")
+                if len(desc) > 200:
+                    desc = desc[:197] + "..."
+                
+                wiki_url = detail.get("wikipedia", "")
+                preview_url = detail.get("preview", {}).get("source", "")
+                
+                attractions.append({
+                    "name": name,
+                    "type": osm_type,
+                    "rating": round(max(3.5, min(5.0, (place.get("rate", 3) or 3) + random.random() * 0.5)), 1),
+                    "price": random.choice([0, 0, 100, 200, 300, 500]),
+                    "duration": random.choice(["1 hour", "1-2 hours", "2 hours", "2-3 hours"]),
+                    "lat": p_lat,
+                    "lon": p_lon,
+                    "description": desc,
+                    "photos": [preview_url] if preview_url else [],
+                    "photo": preview_url or "",
+                    "wikipedia": wiki_url,
+                    "xid": xid
+                })
+            
+            return attractions
+    except Exception as e:
+        print(f"⚠️ OpenTripMap failed: {e}")
+        return []
 
 async def fetch_overpass_attractions(lat: float, lon: float, radius: int = 15000, limit: int = 20) -> List[Dict]:
-    """Fetch real tourist attractions from Overpass API (free, no key) — includes hidden gems"""
+    """Fallback: Fetch tourist attractions from Overpass API"""
     query = f"""
     [out:json][timeout:20];
     (
@@ -502,10 +612,8 @@ async def fetch_overpass_attractions(lat: float, lon: float, radius: int = 15000
       node["historic"~"monument|castle|fort|ruins|memorial|archaeological_site"](around:{radius},{lat},{lon});
       node["leisure"~"park|garden|nature_reserve|water_park|beach_resort"](around:{radius},{lat},{lon});
       node["natural"~"beach|waterfall|cave_entrance|spring|cliff|peak"](around:{radius},{lat},{lon});
-      node["amenity"~"place_of_worship"](around:{radius},{lat},{lon});
       way["tourism"~"attraction|museum|viewpoint"](around:{radius},{lat},{lon});
       way["historic"~"monument|castle|fort"](around:{radius},{lat},{lon});
-      way["natural"~"beach|waterfall|cave_entrance"](around:{radius},{lat},{lon});
     );
     out center body {limit};
     """
@@ -517,106 +625,108 @@ async def fetch_overpass_attractions(lat: float, lon: float, radius: int = 15000
             
             attractions = []
             seen_names = set()
+            generic_words = ["historic center", "main museum", "central market", "bus station",
+                           "railway station", "airport", "hospital", "school", "bank"]
+            
             for el in elements:
                 tags = el.get("tags", {})
                 name = tags.get("name", tags.get("name:en", ""))
-                if not name or name in seen_names:
+                if not name or name in seen_names or len(name) < 3:
+                    continue
+                if any(gw in name.lower() for gw in generic_words):
                     continue
                 seen_names.add(name)
                 
                 el_lat = el.get("lat") or el.get("center", {}).get("lat", lat)
                 el_lon = el.get("lon") or el.get("center", {}).get("lon", lon)
                 
-                # Determine type from OSM tags
                 osm_type = "attraction"
-                if tags.get("tourism") == "museum":
-                    osm_type = "museum"
-                elif tags.get("historic"):
-                    osm_type = "historic"
-                elif tags.get("tourism") == "viewpoint":
-                    osm_type = "viewpoint"
-                elif tags.get("leisure") in ("park", "garden", "nature_reserve"):
-                    osm_type = "park"
-                elif tags.get("tourism") == "gallery":
-                    osm_type = "museum"
-                elif tags.get("natural") in ("beach", "waterfall", "cave_entrance", "spring", "cliff", "peak"):
-                    osm_type = "hidden_gem"
-                elif tags.get("amenity") == "place_of_worship":
-                    osm_type = "cultural"
+                if tags.get("tourism") == "museum": osm_type = "museum"
+                elif tags.get("historic"): osm_type = "historic"
+                elif tags.get("tourism") == "viewpoint": osm_type = "viewpoint"
+                elif tags.get("leisure") in ("park", "garden", "nature_reserve"): osm_type = "park"
+                elif tags.get("natural") in ("beach", "waterfall", "cave_entrance"): osm_type = "hidden_gem"
                 
-                desc = tags.get("description", tags.get("tourism:description", f"Visit {name}"))
-                if desc == f"Visit {name}" and tags.get("wikipedia"):
-                    desc = f"{name} — featured on Wikipedia"
+                desc = tags.get("description", tags.get("tourism:description", ""))
+                if not desc:
+                    wiki = tags.get("wikipedia", "")
+                    desc = f"{name} — {'featured on Wikipedia' if wiki else 'worth visiting'}"
                 
                 attractions.append({
                     "name": name,
                     "type": osm_type,
                     "rating": round(3.8 + random.random() * 1.2, 1),
-                    "price": random.choice([0, 0, 200, 300, 500, 800, 1000, 1500]),
-                    "duration": random.choice(["1 hour", "1-2 hours", "2 hours", "2-3 hours", "3 hours"]),
+                    "price": random.choice([0, 0, 200, 300, 500, 800]),
+                    "duration": random.choice(["1 hour", "1-2 hours", "2 hours", "2-3 hours"]),
                     "lat": el_lat,
                     "lon": el_lon,
                     "description": desc,
-                    "photos": []  # Will be filled with Pexels
+                    "photos": [],
+                    "photo": ""
                 })
-                
                 if len(attractions) >= limit:
                     break
-            
             return attractions
     except Exception as e:
         print(f"⚠️ Overpass API failed: {e}")
         return []
 
 async def get_dynamic_attractions(city: str) -> List[Dict]:
-    """Get attractions for ANY city — tries Overpass API first, then fallback"""
+    """Get attractions — tries OpenTripMap first, then Overpass, then fallback"""
     city_lower = city.lower().strip()
     
-    # Try Overpass API for live data
     geo = await geocode_city(city)
     if geo:
         print(f"📍 Geocoded {city}: {geo['lat']}, {geo['lon']}")
-        attractions = await fetch_overpass_attractions(geo["lat"], geo["lon"])
         
+        # Try OpenTripMap first (curated, higher quality)
+        attractions = await fetch_opentripmap_places(geo["lat"], geo["lon"])
         if len(attractions) >= 3:
-            # Fetch photos for top attractions (limit to avoid rate limiting)
+            print(f"🎯 Found {len(attractions)} curated places via OpenTripMap for {city}")
+            for attr in attractions[:12]:
+                if not attr.get("photos") or (attr["photos"] and not attr["photos"][0]):
+                    photos, extra = await fetch_place_photos(attr['name'], attr.get('lat', 0.0), attr.get('lon', 0.0), city, count=2)
+                    attr["photos"] = photos
+                    attr["photo"] = photos[0] if photos else ""
+                    if extra and attr.get("description", "").startswith("Visit "):
+                        attr["description"] = extra[:200]
+            return attractions
+        
+        # Fallback to Overpass
+        attractions = await fetch_overpass_attractions(geo["lat"], geo["lon"])
+        if len(attractions) >= 3:
             for attr in attractions[:8]:
-                if not attr["photos"]:
-                    attr["photos"] = await fetch_place_photos(attr['name'], city, count=3)
-                    attr["photo"] = attr["photos"][0] if attr["photos"] else ""
-            # Fill remaining with generic photo
+                if not attr.get("photos") or not attr["photos"]:
+                    photos, _ = await fetch_place_photos(attr['name'], attr.get('lat', 0.0), attr.get('lon', 0.0), city, count=2)
+                    attr["photos"] = photos
+                    attr["photo"] = photos[0] if photos else ""
             for attr in attractions[8:]:
-                if not attr["photos"]:
-                    attr["photos"] = ["https://images.pexels.com/photos/460672/pexels-photo-460672.jpeg"]
+                if not attr.get("photos") or not attr["photos"]:
+                    attr["photos"] = [f"https://source.unsplash.com/800x600/?{city.replace(' ', '+')},tourism"]
                     attr["photo"] = attr["photos"][0]
-            
-            print(f"🎯 Found {len(attractions)} attractions via Overpass API for {city}")
+            print(f"🎯 Found {len(attractions)} attractions via Overpass for {city}")
             return attractions
     
-    # Fallback to hardcoded data
     if city_lower in FALLBACK_ATTRACTIONS:
         print(f"📦 Using fallback data for {city}")
         return FALLBACK_ATTRACTIONS[city_lower]
     
-    # Generic fallback for completely unknown cities
-    print(f"⚠️ No data for {city}, generating generic attractions")
+    print(f"⚠️ No data for {city}, generating generic places")
+    enc = city.replace(' ', '+')
     return [
-        {"name": f"{city} Historic Center", "type": "historic", "rating": 4.5, "price": 0, "duration": "2-3 hours", "description": f"Explore the historic heart of {city}", "photo": "https://images.pexels.com/photos/460672/pexels-photo-460672.jpeg"},
-        {"name": f"{city} Main Museum", "type": "museum", "rating": 4.4, "price": 800, "duration": "2 hours", "description": f"Major museum showcasing {city}'s history and culture", "photo": "https://images.pexels.com/photos/2901209/pexels-photo-2901209.jpeg"},
-        {"name": f"{city} Central Market", "type": "shopping", "rating": 4.3, "price": 1000, "duration": "2 hours", "description": f"Vibrant local market with authentic goods", "photo": "https://images.pexels.com/photos/1134775/pexels-photo-1134775.jpeg"},
-        {"name": f"{city} Cultural District", "type": "cultural", "rating": 4.4, "price": 500, "duration": "3 hours", "description": f"Experience local culture and traditions", "photo": "https://images.pexels.com/photos/1732414/pexels-photo-1732414.jpeg"},
+        {"name": f"{city} Heritage Walk", "type": "historic", "rating": 4.5, "price": 0, "duration": "2-3 hours", "description": f"Walk through the historic heart of {city}", "photo": f"https://source.unsplash.com/800x600/?{enc},historic", "photos": [], "lat": 0, "lon": 0},
+        {"name": f"{city} Local Experience", "type": "cultural", "rating": 4.4, "price": 500, "duration": "3 hours", "description": f"Experience local culture", "photo": f"https://source.unsplash.com/800x600/?{enc},culture", "photos": [], "lat": 0, "lon": 0},
     ]
 
 # Helper for delay replanning: find nearby short-duration places
 async def find_nearby_quick_attractions(lat: float, lon: float, max_count: int = 5) -> List[Dict]:
     """Find nearby attractions within 5km for quick visits (delay scenario)"""
     attractions = await fetch_overpass_attractions(lat, lon, radius=5000, limit=max_count)
-    # Fetch photos
     for attr in attractions:
         if not attr.get("photos"):
-            attr["photos"] = await fetch_place_photos(attr["name"], "", count=1)
-            attr["photo"] = attr["photos"][0] if attr["photos"] else ""
-        # Force shorter durations for quick visits
+            photos, _ = await fetch_place_photos(attr["name"], attr.get("lat", lat), attr.get("lon", lon), count=1)
+            attr["photos"] = photos
+            attr["photo"] = photos[0] if photos else ""
         attr["duration"] = random.choice(["30 min", "45 min", "1 hour", "1-2 hours"])
     return attractions
 
