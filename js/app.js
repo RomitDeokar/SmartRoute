@@ -1,9 +1,9 @@
 // ============================================
-// SmartRoute v14.0 — Agentic AI Travel Planner
+// Smart Route SRMist — Agentic AI Travel Planner
 // All locations from APIs, zero duplicates, weather/crowd replan,
 // live nearby suggestions, Indian language support
-// Smart chatbot with place suggestions
-// Full agentic booking workflow (flights, hotels, cabs, payment)
+// Deep Chennai & SRM integration
+// Full agentic booking workflow (flights, trains, hotels, cabs, payment)
 // ============================================
 
 const API_BASE = (() => {
@@ -46,7 +46,12 @@ const CITY_COORDS = {
     barcelona: [41.3874, 2.1686], istanbul: [41.0082, 28.9784], amsterdam: [52.3676, 4.9041],
     sydney: [-33.8688, 151.2093], bali: [-8.3405, 115.0920], goa: [15.2993, 74.1240],
     udaipur: [24.5854, 73.7125], varanasi: [25.3176, 83.0068], mumbai: [19.0760, 72.8777],
-    delhi: [28.7041, 77.1025], agra: [27.1767, 78.0081]
+    delhi: [28.7041, 77.1025], agra: [27.1767, 78.0081],
+    chennai: [13.0827, 80.2707], srm: [12.8231, 80.0442], srmist: [12.8231, 80.0442],
+    kattankulathur: [12.8231, 80.0442], mahabalipuram: [12.6169, 80.1993],
+    pondicherry: [11.9416, 79.8083], bangalore: [12.9716, 77.5946], bengaluru: [12.9716, 77.5946],
+    hyderabad: [17.3850, 78.4867], kolkata: [22.5726, 88.3639], lucknow: [26.8467, 80.9462],
+    kochi: [9.9312, 76.2673], shimla: [31.1048, 77.1734], manali: [32.2432, 77.1892]
 };
 
 // ============================================
@@ -140,6 +145,9 @@ function init() {
     connectWebSocket();
     setInterval(updateAgentPulse, 3000);
     document.getElementById('startDate').valueAsDate = new Date();
+    
+    // Try to detect user location on startup for the origin field
+    tryAutoDetectOrigin();
 
     const urlParams = new URLSearchParams(window.location.search);
     const destParam = urlParams.get('dest');
@@ -150,7 +158,78 @@ function init() {
         setTimeout(() => generateTrip(), 500);
     }
 
-    console.log('SmartRoute v14.0 initialized — Agentic AI Travel Planner');
+    console.log('Smart Route SRMist initialized — Agentic AI Travel Planner');
+}
+
+// === GPS LOCATION DETECTION ===
+async function tryAutoDetectOrigin() {
+    // Silently try to get user location on startup (don't bother user if it fails)
+    if (!navigator.geolocation) return;
+    try {
+        const pos = await new Promise((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(resolve, reject, {
+                enableHighAccuracy: false, timeout: 5000, maximumAge: 300000
+            });
+        });
+        const lat = pos.coords.latitude;
+        const lon = pos.coords.longitude;
+        // Reverse geocode to get location name
+        const cityName = await reverseGeocode(lat, lon);
+        if (cityName) {
+            const originField = document.getElementById('origin');
+            if (originField && !originField.value) {
+                originField.value = cityName;
+                originField.placeholder = cityName;
+                showToast(`Location detected: ${cityName}`, 'info');
+            }
+        }
+    } catch (e) {
+        // Silently fail — user can manually enter
+    }
+}
+
+async function detectUserLocation() {
+    const originField = document.getElementById('origin');
+    if (!navigator.geolocation) {
+        showToast('GPS not available. Please enter your location manually.', 'warning');
+        return;
+    }
+    
+    showToast('Detecting your location...', 'info');
+    
+    try {
+        const pos = await new Promise((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(resolve, reject, {
+                enableHighAccuracy: true, timeout: 10000, maximumAge: 60000
+            });
+        });
+        const lat = pos.coords.latitude;
+        const lon = pos.coords.longitude;
+        const cityName = await reverseGeocode(lat, lon);
+        if (cityName && originField) {
+            originField.value = cityName;
+            showToast(`Location detected: ${cityName}`, 'success');
+        } else {
+            showToast('Could not determine your city. Please enter manually.', 'warning');
+        }
+    } catch (e) {
+        showToast('GPS failed. Please enter your location manually.', 'warning');
+    }
+}
+
+async function reverseGeocode(lat, lon) {
+    try {
+        const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=12&addressdetails=1`, {
+            headers: { 'User-Agent': 'SmartRoute/14.0' }
+        });
+        if (res.ok) {
+            const data = await res.json();
+            const addr = data.address || {};
+            // Return most meaningful location: city > town > county > state
+            return addr.city || addr.town || addr.village || addr.county || addr.state || data.display_name?.split(',')[0] || '';
+        }
+    } catch (e) { /* silent */ }
+    return '';
 }
 
 // === MAP ===
@@ -222,11 +301,11 @@ function updateMap(itinerary) {
 // === WEBSOCKET ===
 let _wsRetries = 0;
 function connectWebSocket() {
-    if (_wsRetries > 3) return;
+    if (_wsRetries > 1) return; // Only retry once — sandbox proxy may not support WS
     try {
         const wsUrl = API_BASE.replace(/^http/, 'ws') + '/ws/agents';
         state.ws = new WebSocket(wsUrl);
-        state.ws.onopen = () => { _wsRetries = 0; };
+        state.ws.onopen = () => { _wsRetries = 0; console.log('WebSocket connected'); };
         state.ws.onmessage = e => {
             try {
                 const d = JSON.parse(e.data);
@@ -236,9 +315,9 @@ function connectWebSocket() {
                 }
             } catch (err) { /* ignore */ }
         };
-        state.ws.onclose = () => { _wsRetries++; if (_wsRetries <= 3) setTimeout(connectWebSocket, 5000); };
+        state.ws.onclose = () => { _wsRetries++; if (_wsRetries <= 1) setTimeout(connectWebSocket, 5000); };
         state.ws.onerror = () => { _wsRetries++; };
-    } catch (e) { /* backend not running */ }
+    } catch (e) { /* backend not running or WS not supported */ }
 }
 
 // === AGENTS UI ===
@@ -255,11 +334,19 @@ function renderAgents() {
 
 function updateAgentStatus(id, status) {
     const el = document.getElementById(`status-${id}`);
-    if (el) el.className = 'agent-status ' + status;
+    if (el) {
+        el.className = 'agent-status ' + status;
+        // Track agent states for coordination
+        state.agents[id] = { status, timestamp: Date.now() };
+    }
 }
 function setAllAgentsStatus(status) { AGENTS.forEach(a => updateAgentStatus(a.id, status)); }
 function updateAgentPulse() {
+    // Periodic sync with backend agent status
+    if (state.generating) return; // Don't interfere during generation
+    
     if (!state.itinerary) {
+        // Before trip: subtle idle pulsing
         AGENTS.forEach(a => {
             const el = document.getElementById(`status-${a.id}`);
             if (el && el.classList.contains('idle')) {
@@ -267,7 +354,30 @@ function updateAgentPulse() {
                 setTimeout(() => el.classList.replace('thinking', 'idle'), 1500);
             }
         });
+    } else {
+        // After trip: try syncing with backend
+        syncAgentStatus();
     }
+}
+
+async function syncAgentStatus() {
+    try {
+        const res = await fetch(`${API_BASE}/agents/status`, { signal: AbortSignal.timeout(3000) });
+        if (res.ok) {
+            const data = await res.json();
+            const agents = data.agents || [];
+            agents.forEach(agent => {
+                const localId = agent.id?.replace('_agent', '') || '';
+                const status = agent.status === 'working' ? 'working' : 
+                               agent.status === 'completed' ? 'completed' : 'idle';
+                const el = document.getElementById(`status-${localId}`);
+                if (el) {
+                    el.className = 'agent-status ' + status;
+                    state.agents[localId] = { status, backendStatus: agent.status, tasks: agent.completed_tasks };
+                }
+            });
+        }
+    } catch (e) { /* ignore sync failures */ }
 }
 
 // === ACTIVITY LOG ===
@@ -303,19 +413,49 @@ function updateBayesian(category, liked) {
     renderBayesianBars();
 }
 
-// === RL ENGINE ===
+// === RL ENGINE (IMPROVED) ===
 function calculateReward(rating, budgetAdherence, weatherMatch, crowdLevel) {
     const { alpha, beta, gamma, delta } = state.rl;
-    return alpha * (rating / 5) + beta * budgetAdherence + gamma * weatherMatch - delta * crowdLevel;
+    const reward = alpha * (rating / 5) + beta * budgetAdherence + gamma * weatherMatch - delta * crowdLevel;
+    return Math.max(-1, Math.min(1, reward));
 }
 
 function runRLEpisode() {
-    const rating = 3 + Math.random() * 2;
-    const budgetAdh = 0.5 + Math.random() * 0.5;
-    const weatherMatch = 0.4 + Math.random() * 0.6;
-    const crowd = Math.random() * 0.7;
+    // Use actual trip data if available for more realistic rewards
+    const itin = state.itinerary;
+    const budget = state.budget;
+    let rating, budgetAdh, weatherMatch, crowd;
+    
+    if (itin && budget.total > 0) {
+        // Real data-driven reward from actual itinerary
+        const actCount = itin.days?.reduce((s, d) => s + (d.activities?.length || 0), 0) || 3;
+        const avgRating = actCount > 0
+            ? itin.days.reduce((s, d) => s + d.activities.reduce((ss, a) => ss + (a.rating || 4.0), 0), 0) / actCount
+            : 4.0;
+        rating = Math.min(5, avgRating + (Math.random() - 0.5) * 0.3);
+        
+        // Budget adherence: closer to 70% usage is optimal
+        budgetAdh = Math.max(0, 1 - Math.abs(budget.used / budget.total - 0.7));
+        
+        // Weather from real forecast data
+        weatherMatch = state.weatherData?.length > 0
+            ? state.weatherData.filter(w => w.risk_level !== 'high').length / state.weatherData.length
+            : 0.7;
+        
+        // Crowd based on activity density
+        crowd = Math.min(0.8, actCount / (itin.days?.length * 6 || 6) * 0.6);
+    } else {
+        // Simulation with gradual improvement
+        const ep = state.rl.episode;
+        rating = Math.min(5, 3 + Math.min(ep * 0.02, 1.5) + (Math.random() - 0.5) * 0.4);
+        budgetAdh = Math.min(0.95, 0.4 + Math.min(ep * 0.01, 0.4) + Math.random() * 0.2);
+        weatherMatch = 0.5 + Math.min(ep * 0.005, 0.3) + Math.random() * 0.2;
+        crowd = Math.max(0.1, 0.5 - Math.min(ep * 0.005, 0.25) + (Math.random() - 0.5) * 0.15);
+    }
+    
     let reward = calculateReward(rating, budgetAdh, weatherMatch, crowd);
-    reward += state.rl.episode * 0.008 + (Math.random() - 0.3) * 0.1;
+    // Natural learning curve: small stochastic exploration noise
+    reward += (Math.random() - 0.4) * 0.05;
     reward = Math.max(0, Math.min(1, reward));
     state.rl.rewards.push(reward);
     state.rl.episode++;
@@ -388,38 +528,50 @@ function drawAgentGraph() {
 async function generateTrip() {
     if (state.generating) return;
     const dest = document.getElementById('destination').value.trim();
+    const origin = document.getElementById('origin')?.value?.trim() || '';
     const duration = parseInt(document.getElementById('duration').value) || 3;
     const budget = parseInt(document.getElementById('budget').value) || 15000;
     const startDate = document.getElementById('startDate').value || new Date().toISOString().split('T')[0];
 
     if (!dest) { showToast('Please enter a destination', 'warning'); return; }
+    
+    // Prompt for origin if not provided (helps with flight/train booking later)
+    if (!origin) {
+        showToast('Tip: Enter your origin location for better flight & train booking!', 'info');
+    }
 
     state.generating = true;
     state.budget.total = budget;
     state.budget.used = 0;
     state.currentDest = dest;
+    state.origin = origin;
     showLoading(true);
     setAllAgentsStatus('thinking');
-    addLog('planner', `Autonomous agents activated for ${dest} (${duration} days, ₹${budget.toLocaleString()})`, 'info');
+    const originMsg = origin ? ` from ${origin}` : '';
+    addLog('planner', `Autonomous agents activated${originMsg} for ${dest} (${duration} days, ₹${budget.toLocaleString()})`, 'info');
 
     document.getElementById('agentConvoPanel').style.display = 'block';
     document.getElementById('agentConvo').innerHTML = '';
     document.getElementById('insightsPanel').style.display = 'none';
 
-    agentSay('planner', null, `API-driven ${duration}-day trip planning for ${dest}. Querying Overpass + OpenTripMap + Wikipedia...`, 'decision');
+    agentSay('planner', null, `API-driven ${duration}-day trip planning for ${dest}${originMsg}. Querying Overpass + Wikipedia APIs...`, 'decision');
     updateAgentStatus('planner', 'working');
 
     let backendData = null;
     const startMs = Date.now();
     try {
         const chk = document.querySelectorAll('.checkbox-label input');
+        // Checkboxes: [0]=Flights, [1]=Trains, [2]=Hotels, [3]=Restaurants, [4]=Transport
         const res = await fetch(`${API_BASE}/generate-trip`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 destination: dest, duration, budget, start_date: startDate,
-                preferences: [], persona: state.persona,
-                include_flights: chk[0]?.checked, include_hotels: chk[1]?.checked,
-                include_restaurants: chk[2]?.checked, include_transport: chk[3]?.checked
+                preferences: [], persona: state.persona, origin,
+                include_flights: chk[0]?.checked || false,
+                include_trains: chk[1]?.checked || false,
+                include_hotels: chk[2]?.checked || false,
+                include_restaurants: chk[3]?.checked || false,
+                include_transport: chk[4]?.checked || false
             })
         });
         if (res.ok) backendData = await res.json();
@@ -498,6 +650,13 @@ function addInsight(type, icon, title, text) {
 
 async function processTrip(data, dest, duration, budget) {
     state.itinerary = data.itinerary || data;
+    // Store budget breakdown from backend on the itinerary object
+    if (data.budget_breakdown) {
+        state.itinerary.budget_breakdown = data.budget_breakdown;
+    }
+    if (data.budget_summary) {
+        state.itinerary.budget_summary = data.budget_summary;
+    }
     state.currentDest = dest;
     state.weatherData = data.weather_forecasts || [];
 
@@ -527,19 +686,81 @@ async function processTrip(data, dest, duration, budget) {
     setTimeout(() => runAutonomousAnalysis(dest, duration, budget), 1500);
 
     // Explainability panel
+    renderMDPDecisionTrace(dest, budget, duration);
+    
+    const genTime = data?.metadata?.elapsed_seconds || 'fast';
+    showToast(`Trip to ${dest} planned in ${genTime}s by 7 AI agents!`, 'success');
+}
+
+function renderMDPDecisionTrace(dest, budget, duration) {
     const ep = document.getElementById('explainPanel');
     if (ep) {
         const itin = state.itinerary;
+        const totalCost = itin?.total_cost || 0;
+        const budgetAdh = Math.max(0, 1 - Math.abs(totalCost / budget - 0.5) / 0.5).toFixed(3);
+        const weatherProb = state.weatherData?.length > 0 
+            ? (state.weatherData.filter(w => w.risk_level === 'low').length / state.weatherData.length).toFixed(2)
+            : '0.70';
+        
+        // Use actual crowd data computed from itinerary activities
+        const activityCount = itin?.days?.reduce((s, d) => s + (d.activities?.length || 0), 0) || 0;
+        const avgRating = activityCount > 0
+            ? (itin.days.reduce((s, d) => s + d.activities.reduce((ss, a) => ss + (a.rating || 4.0), 0), 0) / activityCount).toFixed(1)
+            : '4.0';
+        // Crowd penalty based on time of day and activity density
+        const crowdPenalty = activityCount > 0
+            ? Math.min(0.8, (activityCount / (duration * 6)) * 0.6).toFixed(2)
+            : '0.30';
+        // Satisfaction derived from real activity ratings and budget adherence
+        const satisfaction = Math.min(5.0, parseFloat(avgRating) * (1 + parseFloat(budgetAdh) * 0.15)).toFixed(1);
+        const satNorm = (satisfaction / 5.0).toFixed(3);
+        
+        const alpha = state.rl.alpha;
+        const beta = state.rl.beta;
+        const gamma = state.rl.gamma;
+        const delta = state.rl.delta;
+        const reward = (alpha * satNorm + beta * budgetAdh + gamma * weatherProb - delta * crowdPenalty).toFixed(4);
+        
+        // Determine best action
+        const remaining = budget - totalCost;
+        const remainPct = remaining / budget;
+        let bestAction = 'keep_plan';
+        let actionReason = 'Plan is optimal, no changes needed';
+        if (remainPct < 0.2) { bestAction = 'adjust_budget'; actionReason = 'Budget running low, reallocating'; }
+        else if (parseFloat(weatherProb) < 0.5) { bestAction = 'reorder_destinations'; actionReason = 'Weather risk detected, reordering'; }
+        else if (parseFloat(crowdPenalty) > 0.6) { bestAction = 'add_contingency'; actionReason = 'High crowd expected, adding alternatives'; }
+        
         ep.innerHTML = `
-        <div style="margin-bottom:8px"><strong style="color:var(--accent)">MDP Decision Trace</strong></div>
-        <div class="text-sm" style="color:var(--text-2);margin-bottom:6px">State: S(${dest}, ₹${budget}, weather=0.7, crowd=0.4, sat=0.8)</div>
-        <div class="text-sm" style="color:var(--text-2);margin-bottom:6px">Action: keep_itinerary (π* from value iteration)</div>
-        <div class="text-sm" style="color:var(--text-2);margin-bottom:6px">Reward: R = ${(0.4 * 0.9 + 0.3 * (1 - (itin?.total_cost || 0) / budget) + 0.2 * 0.7 - 0.1 * 0.4).toFixed(3)}</div>
-        <div class="text-sm" style="color:var(--text-2)">ε-greedy, ε=0.1, γ=0.95</div>`;
+        <div style="margin-bottom:10px"><strong style="color:var(--accent)">MDP Decision Trace</strong></div>
+        <div style="background:var(--bg-3);padding:8px;border-radius:8px;margin-bottom:8px;border-left:3px solid var(--primary)">
+            <div class="text-xs fw-600" style="color:var(--primary);margin-bottom:4px">Current State S(t)</div>
+            <div class="text-xs" style="color:var(--text-2);line-height:1.6">
+                📍 Location: <strong>${dest}</strong> (${duration} days)<br>
+                💰 Budget: ₹${totalCost.toLocaleString()} / ₹${budget.toLocaleString()} (${(totalCost/budget*100).toFixed(0)}% used)<br>
+                🌦️ Weather P(good): <strong>${weatherProb}</strong><br>
+                👥 Crowd penalty: <strong>${crowdPenalty}</strong><br>
+                😊 Satisfaction: <strong>${satisfaction}/5.0</strong>
+            </div>
+        </div>
+        <div style="background:var(--bg-3);padding:8px;border-radius:8px;margin-bottom:8px;border-left:3px solid var(--success)">
+            <div class="text-xs fw-600" style="color:var(--success);margin-bottom:4px">Reward Function</div>
+            <div class="text-xs" style="color:var(--text-2);line-height:1.6">
+                R = α(${alpha})×sat(${satNorm}) + β(${beta})×budget(${budgetAdh})<br>
+                &nbsp;&nbsp;&nbsp;+ γ(${gamma})×weather(${weatherProb}) − δ(${delta})×crowd(${crowdPenalty})<br>
+                <strong style="color:var(--accent)">R = ${reward}</strong>
+            </div>
+        </div>
+        <div style="background:var(--bg-3);padding:8px;border-radius:8px;border-left:3px solid #f59e0b">
+            <div class="text-xs fw-600" style="color:#f59e0b;margin-bottom:4px">Policy π*(s)</div>
+            <div class="text-xs" style="color:var(--text-2);line-height:1.6">
+                Action: <strong style="color:var(--accent)">${bestAction}</strong><br>
+                Reason: ${actionReason}<br>
+                ε-greedy: ε=0.1, γ=0.95, η=0.1
+            </div>
+        </div>`;
+    
     }
 
-    const genTime = data?.metadata?.elapsed_seconds || elapsed || 'fast';
-    showToast(`Trip to ${dest} planned in ${genTime}s by 7 AI agents!`, 'success');
 }
 
 async function runAutonomousAnalysis(dest, duration, budget) {
@@ -832,21 +1053,71 @@ function renderWeather(dest, days, forecasts) {
     }
 }
 
-// === BUDGET ===
+// === BUDGET (FIXED — uses real data from backend) ===
 function updateBudgetDisplay(itin, total) {
-    const used = itin?.total_cost || 0;
-    state.budget = { total, used };
-    const pct = Math.min(100, (used / total * 100));
+    const activitiesCost = itin?.total_cost || 0;
+    
+    // Use backend budget_breakdown if available
+    const bd = itin?.budget_breakdown || {};
+    
+    // If backend provides breakdown, use it. Otherwise compute from actual itinerary costs.
+    const hasBackendData = bd.accommodation || bd.food || bd.transport || bd.activities;
+    let breakdown;
+    if (hasBackendData) {
+        breakdown = {
+            accommodation: bd.accommodation || 0,
+            food: bd.food || 0,
+            activities: bd.activities || activitiesCost,
+            transport: bd.transport || 0,
+            emergency: bd.emergency || 0,
+        };
+    } else {
+        // Compute realistic breakdown from actual costs
+        // Activities cost comes from itinerary; other costs are proportional to budget
+        const remaining = Math.max(0, total - activitiesCost);
+        breakdown = {
+            accommodation: Math.round(remaining * 0.45),
+            food: Math.round(remaining * 0.25),
+            activities: activitiesCost,
+            transport: Math.round(remaining * 0.20),
+            emergency: Math.round(remaining * 0.10),
+        };
+    }
+    
+    const totalSpend = Object.values(breakdown).reduce((s, v) => s + v, 0);
+    // Ensure total spend doesn't exceed budget for display purposes
+    const displaySpend = Math.min(totalSpend, total);
+    state.budget = { total, used: displaySpend, breakdown };
+    
+    const pct = Math.min(100, (displaySpend / total * 100));
+    const remaining = Math.max(0, total - displaySpend);
+    
     const amtEl = document.getElementById('budgetAmount');
     const fillEl = document.getElementById('budgetFill');
     const totalEl = document.getElementById('budgetTotal');
-    if (amtEl) amtEl.textContent = `₹${used.toLocaleString()}`;
-    if (fillEl) fillEl.style.width = pct + '%';
-    if (totalEl) totalEl.textContent = `/ ₹${total.toLocaleString()}`;
+    
+    if (amtEl) amtEl.textContent = `₹${totalSpend.toLocaleString()}`;
+    if (fillEl) {
+        fillEl.style.width = pct + '%';
+        if (pct > 90) fillEl.style.background = 'linear-gradient(90deg, #ef4444, #dc2626)';
+        else if (pct > 70) fillEl.style.background = 'linear-gradient(90deg, #f59e0b, #d97706)';
+        else fillEl.style.background = 'linear-gradient(90deg, #10b981, #059669)';
+    }
+    if (totalEl) totalEl.textContent = `/ ₹${total.toLocaleString()} (${pct.toFixed(0)}% used)`;
+    
     const cats = document.getElementById('budgetCats');
     if (cats) {
-        const breakdown = { '🏨 Accommodation': 0.35, '🍽️ Food': 0.25, '🎯 Activities': 0.25, '🚗 Transport': 0.10, '🆘 Emergency': 0.05 };
-        cats.innerHTML = Object.entries(breakdown).map(([k, v]) => `<div class="budget-cat"><span>${k}</span><span class="fw-600">₹${Math.round(total * v).toLocaleString()}</span></div>`).join('');
+        const catLabels = {
+            '🏨 Accommodation': breakdown.accommodation,
+            '🍽️ Food': breakdown.food,
+            '🎯 Activities': breakdown.activities,
+            '🚗 Transport': breakdown.transport,
+            '🆘 Emergency': breakdown.emergency,
+        };
+        cats.innerHTML = Object.entries(catLabels).map(([k, v]) => {
+            const catPct = total > 0 ? ((v / total) * 100).toFixed(0) : 0;
+            return `<div class="budget-cat"><span>${k}</span><span class="fw-600">₹${Math.round(v).toLocaleString()} <small style="color:var(--text-3)">(${catPct}%)</small></span></div>`;
+        }).join('') + `<div class="budget-cat" style="border-top:1px solid var(--border);padding-top:6px;margin-top:4px"><span style="color:var(--success)"><strong>💵 Remaining</strong></span><span class="fw-600" style="color:var(--success)">₹${remaining.toLocaleString()}</span></div>`;
     }
 }
 
@@ -1011,12 +1282,15 @@ async function doReplan() {
     const reason = document.getElementById('replanReason')?.value || 'delay';
     const delayHours = parseFloat(document.getElementById('delayHours')?.value) || 4;
     const delayDay = parseInt(document.getElementById('delayDay')?.value) || 1;
-    const weatherRisk = document.getElementById('weatherRisk')?.value || '';
-    const crowdLevel = document.getElementById('crowdLevel')?.value || '';
-    const dest = document.getElementById('destination').value.trim();
-    const budget = parseInt(document.getElementById('budget').value) || 15000;
+    const weatherRisk = document.getElementById('weatherRisk')?.value || 'rain';
+    const crowdLevel = document.getElementById('crowdLevel')?.value || 'high';
+    const dest = document.getElementById('destination').value.trim() || state.currentDest || 'Unknown';
+    const budget = parseInt(document.getElementById('budget').value) || state.budget?.total || 15000;
 
-    if (!state.itinerary) { showToast('Generate a trip first!', 'warning'); return; }
+    if (!state.itinerary || !state.itinerary.days || state.itinerary.days.length === 0) {
+        showToast('Generate a trip first!', 'warning');
+        return;
+    }
     document.getElementById('delayModal')?.classList.remove('active');
     showLoading(true);
     setAllAgentsStatus('thinking');
@@ -1029,13 +1303,37 @@ async function doReplan() {
     agentSay('planner', null, `${reasonLabels[reason]} on Day ${delayDay}. Emergency replanning...`, 'decision');
 
     try {
+        // Build a clean itinerary object for the backend
+        const cleanItinerary = {
+            days: (state.itinerary.days || []).map(d => ({
+                day: d.day || 1,
+                activities: (d.activities || []).map(a => ({
+                    name: a.name || 'Unknown',
+                    type: a.type || 'attraction',
+                    duration: a.duration || '2 hours',
+                    rating: a.rating || 4.0,
+                    cost: a.cost || 0,
+                    time: a.time || '09:00',
+                    lat: a.lat || 0,
+                    lon: a.lon || 0,
+                    description: a.description || ''
+                })),
+                daily_cost: d.daily_cost || 0
+            })),
+            total_cost: state.itinerary.total_cost || 0
+        };
+        
         const res = await fetch(`${API_BASE}/replan`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                destination: dest, current_day: delayDay, budget,
-                original_itinerary: state.itinerary,
-                reason, delay_hours: delayHours,
-                weather_risk: weatherRisk, crowd_level: crowdLevel
+                destination: dest,
+                current_day: Math.min(delayDay, cleanItinerary.days.length),
+                budget,
+                original_itinerary: cleanItinerary,
+                reason,
+                delay_hours: reason === 'delay' ? delayHours : 0,
+                weather_risk: reason === 'weather' ? weatherRisk : '',
+                crowd_level: reason === 'crowd' ? crowdLevel : ''
             })
         });
         if (res.ok) {
@@ -1086,51 +1384,105 @@ function updateReplanFields() {
 // LIVE NEARBY PLACES (Categorized & Quality-Ranked)
 // ============================================
 async function findNearbyPlaces() {
-    if (!state.itinerary) { showToast('Generate a trip first!', 'warning'); return; }
-
-    showToast('Getting your location...', 'info');
-
-    if (!navigator.geolocation) {
-        showToast('Geolocation not supported', 'error');
-        return;
-    }
-
-    navigator.geolocation.getCurrentPosition(async (pos) => {
-        const lat = pos.coords.latitude;
-        const lon = pos.coords.longitude;
-        state.userLocation = { lat, lon };
-
-        addLog('planner', `📍 User location: ${lat.toFixed(4)}, ${lon.toFixed(4)}`, 'info');
-        showLoading(true);
-
+    // Always allow manual entry as primary option (GPS often fails in sandbox)
+    // Try GPS first, fall back to manual entry
+    if (navigator.geolocation && !window._nearbyForceManual) {
+        showToast('Getting your location...', 'info');
+        
         try {
-            const res = await fetch(`${API_BASE}/nearby`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ lat, lon, radius: 10000, destination: state.currentDest })
+            const pos = await new Promise((resolve, reject) => {
+                navigator.geolocation.getCurrentPosition(resolve, reject, { 
+                    enableHighAccuracy: true, timeout: 5000, maximumAge: 30000 
+                });
             });
-
-            if (res.ok) {
-                const data = await res.json();
-                showLoading(false);
-
-                if (data.places?.length > 0 || data.categorized) {
-                    showNearbyPanel(data.places || [], data.categorized || {}, lat, lon);
-                    addNearbyToMap(data.places || [], lat, lon);
-                    showToast(`Found ${data.count || data.places?.length || 0} places near you!`, 'success');
-                } else {
-                    showToast('No notable places found nearby. Try a wider area.', 'warning');
-                }
-            } else {
-                showLoading(false);
-                showToast('Could not fetch nearby places', 'error');
-            }
-        } catch (e) {
-            showLoading(false);
-            showToast('Nearby search failed', 'error');
+            const lat = pos.coords.latitude;
+            const lon = pos.coords.longitude;
+            state.userLocation = { lat, lon };
+            await fetchNearbyPlaces(lat, lon, '');
+            return;
+        } catch (err) {
+            console.log('GPS unavailable, using manual entry:', err.message);
         }
-    }, (err) => {
-        showToast('Location access denied. Please enable GPS.', 'error');
-    }, { enableHighAccuracy: true, timeout: 10000 });
+    }
+    
+    showNearbyLocationPrompt();
+}
+
+function showNearbyLocationPrompt() {
+    // Use destination from the trip form as default
+    const defaultLoc = document.getElementById('destination')?.value || '';
+    const locationInput = prompt(
+        'Enter your current location (city, landmark, or address):\n\nExamples: "Connaught Place Delhi", "Marina Beach Chennai", "IIT Bombay"',
+        defaultLoc
+    );
+    if (locationInput && locationInput.trim()) {
+        fetchNearbyByName(locationInput.trim());
+    }
+}
+
+async function fetchNearbyByName(locationName) {
+    showLoading(true);
+    addLog('planner', `Searching nearby places around "${locationName}"...`, 'working');
+    
+    try {
+        const res = await fetch(`${API_BASE}/nearby`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lat: 0, lon: 0, radius: 10000, location_name: locationName })
+        });
+        
+        showLoading(false);
+        
+        if (res.ok) {
+            const data = await res.json();
+            if (data.places?.length > 0 || (data.categorized && Object.values(data.categorized).some(arr => arr?.length > 0))) {
+                const coords = data.coordinates || {};
+                showNearbyPanel(data.places || [], data.categorized || {}, coords.lat || 0, coords.lon || 0);
+                addNearbyToMap(data.places || [], coords.lat || 0, coords.lon || 0);
+                showToast(`Found ${data.count || 0} places near ${locationName}!`, 'success');
+                addLog('planner', `Found ${data.count || 0} nearby places`, 'success');
+            } else {
+                showToast('No notable places found near that location. Try a different spot.', 'warning');
+            }
+        } else {
+            const errData = await res.json().catch(() => null);
+            showToast(errData?.detail || 'Could not find that location', 'error');
+        }
+    } catch (e) {
+        showLoading(false);
+        showToast('Nearby search failed. Check your connection.', 'error');
+        console.error('Nearby by name error:', e);
+    }
+}
+
+async function fetchNearbyPlaces(lat, lon, destination) {
+    state.userLocation = { lat, lon };
+    addLog('planner', `Searching nearby: ${lat.toFixed(4)}, ${lon.toFixed(4)}`, 'info');
+    showLoading(true);
+
+    try {
+        const res = await fetch(`${API_BASE}/nearby`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lat, lon, radius: 10000, destination: destination || state.currentDest || '' })
+        });
+
+        showLoading(false);
+
+        if (res.ok) {
+            const data = await res.json();
+            if (data.places?.length > 0 || (data.categorized && Object.values(data.categorized).some(arr => arr?.length > 0))) {
+                showNearbyPanel(data.places || [], data.categorized || {}, lat, lon);
+                addNearbyToMap(data.places || [], lat, lon);
+                showToast(`Found ${data.count || data.places?.length || 0} places near you!`, 'success');
+            } else {
+                showToast('No notable places found nearby. Try a wider area.', 'warning');
+            }
+        } else {
+            showToast('Could not fetch nearby places', 'error');
+        }
+    } catch (e) {
+        showLoading(false);
+        showToast('Nearby search failed', 'error');
+    }
 }
 
 function showNearbyPanel(places, categorized, userLat, userLon) {
@@ -1451,3 +1803,244 @@ function setupEventListeners() {
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
 } else { init(); }
+
+// ============================================
+// DESTINATION RECOMMENDATION SYSTEM
+// ============================================
+function openRecommendModal() {
+    document.getElementById('recommendModal')?.classList.add('active');
+    document.getElementById('recommendResults').innerHTML = '';
+}
+
+async function getRecommendations() {
+    const budget = parseInt(document.getElementById('recBudget')?.value) || 20000;
+    const duration = parseInt(document.getElementById('recDuration')?.value) || 3;
+    const continent = document.getElementById('recContinent')?.value || '';
+    const weatherPref = document.getElementById('recWeather')?.value || '';
+    const month = document.getElementById('recMonth')?.value || '';
+    const currentLocation = document.getElementById('recCurrentLocation')?.value?.trim() || '';
+    const persona = state.persona;
+    
+    const prefs = [];
+    document.querySelectorAll('.rec-pref:checked').forEach(cb => prefs.push(cb.value));
+    
+    const resultsDiv = document.getElementById('recommendResults');
+    resultsDiv.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-2)"><i class="fas fa-spinner fa-spin"></i> AI finding destinations within your budget...</div>';
+    
+    addLog('preference', `Finding destinations within budget (budget: ${budget}, ${duration} days)...`, 'working');
+    
+    try {
+        const res = await fetch(`${API_BASE}/recommend`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                budget, duration, preferences: prefs, persona,
+                continent, weather_pref: weatherPref, month,
+                current_location: currentLocation
+            })
+        });
+        if (res.ok) {
+            const data = await res.json();
+            if (data.success && data.recommendations?.length > 0) {
+                renderRecommendations(data.recommendations, duration, budget);
+                addLog('preference', `Found ${data.recommendations.length} destinations within your budget!`, 'success');
+                return;
+            } else if (data.success && data.recommendations?.length === 0) {
+                resultsDiv.innerHTML = `<div style="text-align:center;padding:20px;color:#f59e0b">
+                    <i class="fas fa-exclamation-triangle"></i> No destinations found within your budget.<br>
+                    <small style="color:var(--text-2)">Try increasing your budget or trip duration.</small>
+                </div>`;
+                return;
+            }
+        }
+    } catch (e) { console.error('Recommendation error:', e); }
+    
+    resultsDiv.innerHTML = '<div style="text-align:center;padding:20px;color:#ef4444"><i class="fas fa-exclamation-circle"></i> Could not get recommendations. Please try again.</div>';
+}
+
+function renderRecommendations(recs, duration, userBudget) {
+    const resultsDiv = document.getElementById('recommendResults');
+    
+    const html = recs.map((r, i) => {
+        const matchPct = Math.min(100, r.match_score * 1.2).toFixed(0);
+        const matchColor = matchPct > 70 ? '#10b981' : matchPct > 40 ? '#f59e0b' : '#ef4444';
+        const photoHtml = r.photo ? `<div style="width:60px;height:60px;border-radius:10px;background:url('${r.photo}') center/cover;flex-shrink:0"></div>` : `<div style="width:60px;height:60px;border-radius:10px;background:var(--bg-4);display:flex;align-items:center;justify-content:center;font-size:1.5rem;flex-shrink:0">🌍</div>`;
+        
+        const withinBudget = r.within_budget !== false;
+        const budgetTag = withinBudget 
+            ? `<span style="background:#10b98120;color:#10b981;padding:1px 6px;border-radius:8px;font-size:0.7rem;font-weight:600">Within Budget</span>` 
+            : `<span style="background:#f59e0b20;color:#f59e0b;padding:1px 6px;border-radius:8px;font-size:0.7rem;font-weight:600">Near Budget</span>`;
+        
+        return `
+        <div style="display:flex;gap:12px;padding:12px;background:var(--bg-3);border-radius:12px;margin-bottom:8px;border-left:3px solid ${matchColor};cursor:pointer;transition:transform 0.15s" 
+             onmouseenter="this.style.transform='scale(1.01)'" onmouseleave="this.style.transform='scale(1)'"
+             onclick="selectRecommendation('${r.name}', ${duration})">
+            ${photoHtml}
+            <div style="flex:1;min-width:0">
+                <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px">
+                    <div style="font-weight:700;font-size:0.95rem">${i === 0 ? '🏆 ' : ''}${r.name}, ${r.country}</div>
+                    <div style="display:flex;gap:4px;align-items:center">
+                        ${budgetTag}
+                        <div style="background:${matchColor}20;color:${matchColor};padding:2px 8px;border-radius:12px;font-size:0.72rem;font-weight:700">${matchPct}% match</div>
+                    </div>
+                </div>
+                <div style="font-size:0.8rem;color:var(--text-2);margin:4px 0">${r.description}</div>
+                <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
+                    ${r.tags.map(t => `<span style="background:var(--bg-4);padding:2px 6px;border-radius:6px;font-size:0.7rem">${t}</span>`).join('')}
+                </div>
+                <div style="display:flex;gap:12px;margin-top:6px;font-size:0.75rem;color:var(--text-2)">
+                    <span>💰 ~₹${r.estimated_total.toLocaleString()} total (₹${r.avg_daily_cost.toLocaleString()}/day)</span>
+                    <span>⭐ ${r.rating}</span>
+                    <span>${r.weather === 'warm' ? '☀️' : r.weather === 'cold' ? '❄️' : '🌤️'} ${r.weather}</span>
+                </div>
+                ${r.match_reasons.length > 0 ? `<div style="font-size:0.72rem;color:${matchColor};margin-top:4px">✓ ${r.match_reasons.slice(0, 3).join(' • ')}</div>` : ''}
+            </div>
+        </div>`;
+    }).join('');
+    
+    resultsDiv.innerHTML = `<div style="font-weight:700;margin-bottom:8px;color:var(--accent)">🎯 Top ${recs.length} Destinations Within Your Budget (click to plan)</div>` + html;
+}
+
+function selectRecommendation(destName, duration) {
+    document.getElementById('destination').value = destName;
+    document.getElementById('duration').value = duration;
+    document.getElementById('recommendModal')?.classList.remove('active');
+    showToast(`Selected ${destName}! Click "Generate AI Trip" to plan.`, 'success');
+    addLog('planner', `Destination selected: ${destName}`, 'success');
+}
+
+// ============================================
+// HALF-DAY / SPECIFIC LOCATION PLANNING
+// ============================================
+function openHalfDayModal() {
+    document.getElementById('halfDayModal')?.classList.add('active');
+    document.getElementById('halfDayResults').innerHTML = '';
+}
+
+async function planHalfDay() {
+    const location = document.getElementById('hdLocation')?.value.trim();
+    const hours = parseFloat(document.getElementById('hdHours')?.value) || 5;
+    const timeOfDay = document.getElementById('hdTimeOfDay')?.value || 'afternoon';
+    const budget = parseInt(document.getElementById('hdBudget')?.value) || 3000;
+    const includeFood = document.getElementById('hdIncludeFood')?.checked || true;
+    
+    if (!location) { showToast('Please enter your current location', 'warning'); return; }
+    
+    const resultsDiv = document.getElementById('halfDayResults');
+    resultsDiv.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-2)"><i class="fas fa-spinner fa-spin"></i> Planning your remaining time...</div>';
+    
+    addLog('planner', `Half-day plan: ${hours}h near ${location}`, 'working');
+    
+    try {
+        const res = await fetch(`${API_BASE}/plan-halfday`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                location, hours_available: hours, time_of_day: timeOfDay,
+                budget, preferences: [], persona: state.persona, include_food: includeFood
+            })
+        });
+        if (res.ok) {
+            const data = await res.json();
+            if (data.success && data.plan?.length > 0) {
+                renderHalfDayPlan(data);
+                addLog('planner', `Half-day plan: ${data.plan.length} activities in ${data.estimated_hours}h`, 'success');
+                
+                // Also show on map
+                if (map && data.coordinates) {
+                    clearMap();
+                    const coords = [];
+                    data.plan.forEach((act, i) => {
+                        if (act.lat && act.lon) {
+                            coords.push([act.lat, act.lon]);
+                            const icon = L.divIcon({
+                                className: 'custom-marker',
+                                html: `<div style="background:linear-gradient(135deg,#06b6d4,#10b981);width:32px;height:32px;border-radius:50% 50% 50% 0;border:2px solid #fff;box-shadow:0 3px 10px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:12px;transform:rotate(-45deg)"><span style="transform:rotate(45deg)">${i + 1}</span></div>`,
+                                iconSize: [32, 32], iconAnchor: [10, 32], popupAnchor: [6, -32]
+                            });
+                            const m = L.marker([act.lat, act.lon], { icon }).addTo(map);
+                            m.bindPopup(`<strong>${act.name}</strong><br>${act.type} • ${act.time}`);
+                            markers.push(m);
+                        }
+                    });
+                    if (data.coordinates) {
+                        coords.unshift([data.coordinates.lat, data.coordinates.lon]);
+                    }
+                    if (coords.length > 1) {
+                        const routeLine2 = L.polyline(coords, { color: '#06b6d4', weight: 3, opacity: 0.7, dashArray: '10, 8' }).addTo(map);
+                    }
+                    if (coords.length > 0) {
+                        map.fitBounds(L.latLngBounds(coords), { padding: [40, 40], maxZoom: 15 });
+                    }
+                }
+                return;
+            } else if (data.success && (!data.plan || data.plan.length === 0)) {
+                // API worked but no nearby places found
+                const locInfo = data.display_name ? `<br><small style="color:var(--text-3)">Searched near: ${data.display_name.substring(0, 80)}</small>` : '';
+                resultsDiv.innerHTML = `<div style="text-align:center;padding:20px;color:#f59e0b">
+                    <i class="fas fa-map-marked-alt" style="font-size:1.5rem"></i><br>
+                    <strong>Location found, but no tourist spots nearby.</strong>${locInfo}<br>
+                    <small style="color:var(--text-2);margin-top:8px;display:block">
+                        This area may not have many tagged attractions. Try a nearby city center or famous landmark instead.
+                    </small>
+                </div>`;
+                return;
+            }
+        } else {
+            // Handle HTTP error responses
+            const errData = await res.json().catch(() => null);
+            if (errData?.detail) {
+                resultsDiv.innerHTML = `<div style="text-align:center;padding:20px;color:#ef4444">
+                    <i class="fas fa-exclamation-circle"></i> ${errData.detail}<br>
+                    <small style="color:var(--text-2);margin-top:8px;display:block">Try adding the city name, e.g., "Marina Beach, Chennai"</small>
+                </div>`;
+                return;
+            }
+        }
+    } catch (e) { console.error('Half-day plan error:', e); }
+    
+    resultsDiv.innerHTML = `<div style="text-align:center;padding:20px;color:#ef4444">
+        <i class="fas fa-exclamation-circle"></i> Could not plan for this location.<br>
+        <small style="color:var(--text-2);margin-top:8px;display:block">
+            Tips: Try adding the city name (e.g., "Marina Beach Chennai") or use a well-known landmark name.
+            Any location works — landmarks, malls, universities, cafes, neighborhoods!
+        </small>
+    </div>`;
+}
+
+function renderHalfDayPlan(data) {
+    const resultsDiv = document.getElementById('halfDayResults');
+    
+    const activitiesHtml = data.plan.map((act, i) => {
+        const typeIcons = { culture: '🏛️', attraction: '📍', nature: '🌿', food: '🍽️', recreation: '🎢', shopping: '🛍️', eating: '🍽️' };
+        const distStr = act.distance_m < 1000 ? `${act.distance_m}m` : `${(act.distance_m / 1000).toFixed(1)}km`;
+        
+        return `
+        <div style="display:flex;gap:10px;padding:10px;background:var(--bg-3);border-radius:10px;margin-bottom:6px;border-left:3px solid ${act.type === 'food' ? '#ef4444' : '#06b6d4'}">
+            <div style="width:36px;height:36px;border-radius:8px;background:var(--bg-4);display:flex;align-items:center;justify-content:center;font-size:1rem;flex-shrink:0">${typeIcons[act.type] || '📍'}</div>
+            <div style="flex:1">
+                <div style="font-weight:600;font-size:0.88rem">${act.name}</div>
+                <div style="display:flex;gap:8px;font-size:0.75rem;color:var(--text-2);margin-top:2px;flex-wrap:wrap">
+                    <span>🕐 ${act.time}</span>
+                    <span>⏱ ${act.duration}</span>
+                    <span>📏 ${distStr}</span>
+                    <span>💰 ₹${act.cost}</span>
+                </div>
+            </div>
+            ${act.lat ? `<a href="https://www.google.com/maps/dir/?api=1&destination=${act.lat},${act.lon}&travelmode=walking" target="_blank" style="width:32px;height:32px;border-radius:50%;background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;text-decoration:none;flex-shrink:0;font-size:0.8rem"><i class="fas fa-directions"></i></a>` : ''}
+        </div>`;
+    }).join('');
+    
+    const tipsHtml = data.tips.map(t => `<li style="font-size:0.78rem;color:var(--text-2);margin-bottom:4px">${t}</li>`).join('');
+    
+    resultsDiv.innerHTML = `
+    <div style="font-weight:700;margin-bottom:8px;color:var(--accent)">🗓️ Your ${data.hours_available}h Plan near ${data.location}</div>
+    <div style="display:flex;gap:12px;margin-bottom:10px;font-size:0.8rem;color:var(--text-2)">
+        <span>📍 ${data.total_activities} activities</span>
+        <span>⏱ ~${data.estimated_hours}h</span>
+        <span>💰 ~₹${data.estimated_cost.toLocaleString()}</span>
+    </div>
+    ${activitiesHtml}
+    <div style="margin-top:10px;padding:8px;background:var(--bg-4);border-radius:8px">
+        <div style="font-weight:600;font-size:0.8rem;margin-bottom:4px">💡 Tips</div>
+        <ul style="margin:0;padding-left:16px">${tipsHtml}</ul>
+    </div>`;
+}

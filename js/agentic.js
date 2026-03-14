@@ -1,8 +1,9 @@
 // ============================================
-// SmartRoute v14.0 — Agentic Booking Workflow Engine
+// Smart Route SRMist — Agentic Booking Workflow Engine
 // Drives the full travel-booking pipeline:
-//   Trip → Flights → Hotels → Cabs → Review → Pay → Confirmed
+//   Trip → Flights → Trains → Hotels → Cabs → Review → Pay → Confirmed
 // Auto-prompts user, searches automatically, handles payments
+// Origin-aware: books from user's location to destination
 // ============================================
 
 (() => {
@@ -14,11 +15,13 @@ const agenticState = {
     tripId: '',
     selections: {
         flight: null,
+        train: null,
         hotel: null,
         cab: null,
     },
     results: {
         flights: [],
+        trains: [],
         hotels: [],
         cabs: [],
     },
@@ -32,7 +35,7 @@ const agenticState = {
 window.agenticState = agenticState;
 
 // === STEP MANAGEMENT ===
-const STEPS = ['trip_planned', 'choose_flights', 'choose_hotels', 'choose_cabs', 'review_cart', 'payment', 'confirmed'];
+const STEPS = ['trip_planned', 'choose_flights', 'choose_trains', 'choose_hotels', 'choose_cabs', 'review_cart', 'payment', 'confirmed'];
 
 function setWizardStep(stepId) {
     agenticState.currentStep = stepId;
@@ -67,7 +70,7 @@ function showAgentPrompt(text, actions) {
 }
 
 function hideAllPanels() {
-    ['flightResultsPanel', 'hotelResultsPanel', 'cabResultsPanel', 'reviewCartPanel', 'paymentPanel', 'confirmationPanel'].forEach(id => {
+    ['flightResultsPanel', 'trainResultsPanel', 'hotelResultsPanel', 'cabResultsPanel', 'reviewCartPanel', 'paymentPanel', 'confirmationPanel'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.style.display = 'none';
     });
@@ -93,11 +96,14 @@ function startAgenticWizard(dest, duration, budget, data) {
     })();
 
     // Store context
-    agenticState.context = { dest, duration, budget, startDate, endDate };
+    const origin = (typeof state !== 'undefined' && state.origin) ? state.origin : document.getElementById('origin')?.value || '';
+    agenticState.context = { dest, duration, budget, startDate, endDate, origin };
 
+    const originMsg = origin ? ` from <strong>${origin}</strong>` : '';
     showAgentPrompt(
-        `Your <strong>${duration}-day ${dest}</strong> itinerary is ready! I can now help you book <strong>flights, hotels, and local transport</strong>. What would you like to do first?`,
+        `Your <strong>${duration}-day ${dest}</strong> itinerary${originMsg} is ready! I can now help you book <strong>flights, trains, hotels, and local transport</strong>. What would you like to do first?`,
         `<button class="btn btn-primary btn-sm" onclick="agenticSearchFlights()"><i class="fas fa-plane"></i> Search Flights</button>
+         <button class="btn btn-sm" style="background:rgba(6,182,212,0.15);color:#06b6d4" onclick="agenticSearchTrains()"><i class="fas fa-train"></i> Search Trains</button>
          <button class="btn btn-sm" style="background:rgba(16,185,129,0.15);color:#10b981" onclick="agenticSearchHotels()"><i class="fas fa-hotel"></i> Search Hotels</button>
          <button class="btn btn-sm" style="background:rgba(245,158,11,0.15);color:#f59e0b" onclick="agenticSearchCabs()"><i class="fas fa-car"></i> Search Cabs</button>
          <button class="btn btn-sm" style="background:rgba(139,92,246,0.15);color:#8b5cf6" onclick="agenticSkipToReview()"><i class="fas fa-forward"></i> Skip Booking</button>`
@@ -123,10 +129,12 @@ window.agenticSearchFlights = async function() {
 
     try {
         const persona = (typeof state !== 'undefined' && state.persona) ? state.persona : 'solo';
+        const origin = ctx.origin || (typeof state !== 'undefined' && state.origin) || document.getElementById('origin')?.value || '';
+        const originCity = origin || 'Delhi'; // Fallback only if no origin at all
         const res = await fetch(`${API_BASE}/agentic/flights/search`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                origin: 'DEL',
+                origin: originCity,
                 destination: ctx.dest,
                 departure_date: ctx.startDate,
                 return_date: ctx.endDate,
@@ -143,17 +151,20 @@ window.agenticSearchFlights = async function() {
             agenticState.tripId = data.trip_id || agenticState.tripId;
             renderFlightResults(data.flights);
             showAgentPrompt(
-                `✈️ <strong>Flight Agent found ${data.flights.length} options!</strong> Best price: <strong>₹${data.flights[0].price.toLocaleString()}</strong> (${data.flights[0].airline}). Pick one or skip to hotels.`,
-                `<button class="btn btn-sm" style="background:rgba(16,185,129,0.15);color:#10b981" onclick="agenticSearchHotels()"><i class="fas fa-arrow-right"></i> Skip → Hotels</button>`
+                `✈️ <strong>Flight Agent found ${data.flights.length} options!</strong> Best price: <strong>₹${data.flights[0].price.toLocaleString()}</strong> (${data.flights[0].airline}). Pick one or continue.`,
+                `<button class="btn btn-sm" style="background:rgba(6,182,212,0.15);color:#06b6d4" onclick="agenticSearchTrains()"><i class="fas fa-train"></i> Search Trains</button>
+                 <button class="btn btn-sm" style="background:rgba(16,185,129,0.15);color:#10b981" onclick="agenticSearchHotels()"><i class="fas fa-arrow-right"></i> Skip → Hotels</button>`
             );
         } else {
-            showAgentPrompt('No flights found. You can search hotels instead.', 
-                `<button class="btn btn-primary btn-sm" onclick="agenticSearchHotels()"><i class="fas fa-hotel"></i> Search Hotels</button>`);
+            showAgentPrompt('No flights found. Try trains instead.', 
+                `<button class="btn btn-sm" style="background:rgba(6,182,212,0.15);color:#06b6d4" onclick="agenticSearchTrains()"><i class="fas fa-train"></i> Search Trains</button>
+                 <button class="btn btn-primary btn-sm" onclick="agenticSearchHotels()"><i class="fas fa-hotel"></i> Search Hotels</button>`);
         }
     } catch (e) {
         if (typeof showLoading === 'function') showLoading(false);
-        showAgentPrompt('Flight search failed. Try again or skip to hotels.', 
+        showAgentPrompt('Flight search failed. Try trains or hotels instead.', 
             `<button class="btn btn-primary btn-sm" onclick="agenticSearchFlights()"><i class="fas fa-redo"></i> Retry</button>
+             <button class="btn btn-sm" style="background:rgba(6,182,212,0.15);color:#06b6d4" onclick="agenticSearchTrains()"><i class="fas fa-train"></i> Trains</button>
              <button class="btn btn-sm" style="background:rgba(16,185,129,0.15);color:#10b981" onclick="agenticSearchHotels()"><i class="fas fa-hotel"></i> Hotels</button>`);
     }
 };
@@ -432,6 +443,133 @@ window.selectCab = function(cabId) {
 };
 
 // ============================================
+// TRAIN SEARCH
+// ============================================
+window.agenticSearchTrains = async function() {
+    const ctx = agenticState.context;
+    if (!ctx) { showToast('Generate a trip first!', 'warning'); return; }
+
+    setWizardStep('choose_trains');
+    hideAllPanels();
+
+    showAgentPrompt('🔍 <strong>Transport Agent</strong> is searching trains...', '');
+    if (typeof showLoading === 'function') showLoading(true);
+
+    try {
+        const persona = (typeof state !== 'undefined' && state.persona) ? state.persona : 'solo';
+        const origin = ctx.origin || (typeof state !== 'undefined' && state.origin) || document.getElementById('origin')?.value || 'Chennai';
+        const trainClass = persona === 'luxury' ? '1AC' : persona === 'family' ? '2AC' : '3AC';
+        const res = await fetch(`${API_BASE}/agentic/trains/search`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                origin: origin,
+                destination: ctx.dest,
+                departure_date: ctx.startDate,
+                passengers: 1,
+                train_class: trainClass,
+                persona
+            })
+        });
+        const data = await res.json();
+        if (typeof showLoading === 'function') showLoading(false);
+
+        if (data.success && data.trains?.length) {
+            agenticState.results.trains = data.trains;
+            renderTrainResults(data.trains);
+            showAgentPrompt(
+                `🚂 <strong>Found ${data.trains.length} trains!</strong> ${data.agent_message}. Select one or proceed.`,
+                `<button class="btn btn-sm" style="background:rgba(16,185,129,0.15);color:#10b981" onclick="agenticSearchHotels()"><i class="fas fa-arrow-right"></i> Next → Hotels</button>`
+            );
+        } else {
+            showAgentPrompt('No direct trains found on this route. Try flights or proceed to hotels.',
+                `<button class="btn btn-primary btn-sm" onclick="agenticSearchFlights()"><i class="fas fa-plane"></i> Flights</button>
+                 <button class="btn btn-sm" style="background:rgba(16,185,129,0.15);color:#10b981" onclick="agenticSearchHotels()"><i class="fas fa-hotel"></i> Hotels</button>`);
+        }
+    } catch (e) {
+        if (typeof showLoading === 'function') showLoading(false);
+        showAgentPrompt('Train search failed.',
+            `<button class="btn btn-primary btn-sm" onclick="agenticSearchTrains()"><i class="fas fa-redo"></i> Retry</button>
+             <button class="btn btn-sm" style="background:rgba(16,185,129,0.15);color:#10b981" onclick="agenticSearchHotels()"><i class="fas fa-hotel"></i> Hotels</button>`);
+    }
+};
+
+function renderTrainResults(trains) {
+    const panel = document.getElementById('trainResultsPanel');
+    const list = document.getElementById('trainResultsList');
+    if (!panel || !list) return;
+    panel.style.display = 'block';
+
+    list.innerHTML = trains.map(t => {
+        const availClass = t.availability === 'Available' ? 'success' : (t.availability.startsWith('RAC') ? 'warning' : 'error');
+        return `
+        <div class="flight-result-card ${agenticState.selections.train?.id === t.id ? 'selected' : ''}"
+             onclick="selectTrain('${t.id}')" data-id="${t.id}" style="cursor:pointer">
+            <div class="flight-main">
+                <div class="flight-airline">
+                    <span style="font-size:1.3rem">🚂</span>
+                    <div>
+                        <div class="airline-name">${t.train_name}</div>
+                        <div class="flight-number">#${t.train_number}</div>
+                    </div>
+                </div>
+                <div class="flight-timing">
+                    <div class="flight-time">${t.departure}</div>
+                    <div class="flight-city">${t.origin}</div>
+                </div>
+                <div class="flight-duration">
+                    <div class="flight-dur-line"></div>
+                    <div>${t.duration}</div>
+                    <div class="flight-stops-info">${t.stops} stop(s) · ${t.day_of_arrival}</div>
+                </div>
+                <div class="flight-timing">
+                    <div class="flight-time">${t.arrival}</div>
+                    <div class="flight-city">${t.destination}</div>
+                </div>
+                <div class="flight-price-col">
+                    <div class="flight-price">₹${t.price.toLocaleString()}</div>
+                    <div style="font-size:0.65rem;color:var(--text-3)">${t.train_class} class</div>
+                    <div style="font-size:0.65rem;color:var(--${availClass})">${t.availability}</div>
+                </div>
+            </div>
+            <div class="flight-meta" style="padding:6px 12px;display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--border)">
+                <span class="flight-tag">${t.train_class}</span>
+                ${t.pantry ? '<span class="flight-tag">🍽️ Pantry</span>' : ''}
+                <span class="flight-tag">⭐ ${t.rating}</span>
+                <span class="flight-tag">📅 ${t.runs_on}</span>
+                ${t.available_classes.map(c => `<span class="flight-tag" style="font-size:0.6rem">${c}</span>`).join('')}
+                <a href="${t.booking_url}" target="_blank" class="flight-tag" style="color:var(--primary);text-decoration:none">🔗 IRCTC</a>
+            </div>
+        </div>`;
+    }).join('');
+
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+window.selectTrain = function(trainId) {
+    const train = agenticState.results.trains.find(t => t.id === trainId);
+    if (!train) return;
+    agenticState.selections.train = train;
+    renderTrainResults(agenticState.results.trains);
+    showToast(`Selected: ${train.train_name} — ₹${train.price.toLocaleString()}`, 'success');
+
+    setTimeout(() => {
+        showAgentPrompt(
+            `🚂 Train booked! Now let's find your hotel.`,
+            `<button class="btn btn-primary btn-sm" onclick="agenticSearchHotels()"><i class="fas fa-hotel"></i> Search Hotels</button>`
+        );
+    }, 400);
+};
+
+window.sortTrainResults = function(by) {
+    const trains = agenticState.results.trains;
+    if (!trains) return;
+    if (by === 'price') trains.sort((a, b) => a.price - b.price);
+    else if (by === 'duration') trains.sort((a, b) => parseInt(a.duration) - parseInt(b.duration));
+    else if (by === 'rating') trains.sort((a, b) => b.rating - a.rating);
+    renderTrainResults(trains);
+};
+
+// ============================================
 // REVIEW CART
 // ============================================
 window.agenticSkipToReview = function() {
@@ -445,6 +583,7 @@ window.agenticSkipToReview = function() {
     agenticState.cart = [];
     const sel = agenticState.selections;
     if (sel.flight) agenticState.cart.push({ type: 'flight', item: sel.flight, price: sel.flight.price });
+    if (sel.train) agenticState.cart.push({ type: 'train', item: sel.train, price: sel.train.price });
     if (sel.hotel) agenticState.cart.push({ type: 'hotel', item: sel.hotel, price: sel.hotel.total_price });
     if (sel.cab) agenticState.cart.push({ type: 'cab', item: sel.cab, price: sel.cab.estimated_price });
 
@@ -466,15 +605,16 @@ function renderCart() {
     const totalEl = document.getElementById('cartTotal');
     if (!summary) return;
 
-    const icons = { flight: '✈️', hotel: '🏨', cab: '🚗' };
+    const icons = { flight: '✈️', hotel: '🏨', cab: '🚗', train: '🚂' };
     const labels = {
         flight: (item) => `${item.airline} ${item.flight_no} · ${item.departure} → ${item.arrival}`,
+        train: (item) => `${item.train_name} #${item.train_number} · ${item.departure} → ${item.arrival} · ${item.train_class}`,
         hotel: (item) => `${item.name} · ${item.nights} night(s) · ${item.room_type}`,
         cab: (item) => `${item.provider} · ${item.cab_type} · ${item.duration_hours}hrs`,
     };
 
     if (agenticState.cart.length === 0) {
-        summary.innerHTML = '<div class="empty-state"><div class="emoji">🛒</div><p>No items in cart. Search flights, hotels, or cabs first.</p></div>';
+        summary.innerHTML = '<div class="empty-state"><div class="emoji">🛒</div><p>No items in cart. Search flights, trains, hotels, or cabs first.</p></div>';
         if (totalEl) totalEl.innerHTML = '';
         return;
     }
@@ -513,6 +653,7 @@ window.agenticEditSelections = function() {
     showAgentPrompt(
         'What would you like to change?',
         `<button class="btn btn-primary btn-sm" onclick="agenticSearchFlights()"><i class="fas fa-plane"></i> Flights</button>
+         <button class="btn btn-sm" style="background:rgba(6,182,212,0.15);color:#06b6d4" onclick="agenticSearchTrains()"><i class="fas fa-train"></i> Trains</button>
          <button class="btn btn-sm" style="background:rgba(16,185,129,0.15);color:#10b981" onclick="agenticSearchHotels()"><i class="fas fa-hotel"></i> Hotels</button>
          <button class="btn btn-sm" style="background:rgba(245,158,11,0.15);color:#f59e0b" onclick="agenticSearchCabs()"><i class="fas fa-car"></i> Cabs</button>`
     );
@@ -759,6 +900,6 @@ window.generateChatResponse = async function(userMsg) {
     return 'I can help you book flights, hotels, and cabs! Just ask.';
 };
 
-console.log('SmartRoute v14.0 Agentic Booking Engine loaded');
+console.log('Smart Route SRMist Agentic Booking Engine loaded');
 
 })();
