@@ -145,11 +145,26 @@ async def geocode_city_fast(city: str) -> Optional[Dict]:
         "srm university chennai": {"lat": 12.8231, "lon": 80.0442, "display_name": "SRM Institute of Science and Technology, Kattankulathur, Chennai, Tamil Nadu, India", "type": "university", "class": "amenity"},
         "srm institute": {"lat": 12.8231, "lon": 80.0442, "display_name": "SRM Institute of Science and Technology, Kattankulathur, Chennai, Tamil Nadu, India", "type": "university", "class": "amenity"},
         "srm kattankulathur": {"lat": 12.8231, "lon": 80.0442, "display_name": "SRM Institute of Science and Technology, Kattankulathur, Chennai, Tamil Nadu, India", "type": "university", "class": "amenity"},
+        "srm university kattankulathur": {"lat": 12.8231, "lon": 80.0442, "display_name": "SRM Institute of Science and Technology, Kattankulathur, Chennai, Tamil Nadu, India", "type": "university", "class": "amenity"},
+        "srm university, kattankulathur": {"lat": 12.8231, "lon": 80.0442, "display_name": "SRM Institute of Science and Technology, Kattankulathur, Chennai, Tamil Nadu, India", "type": "university", "class": "amenity"},
+        "srm university, kattankulathur, chennai": {"lat": 12.8231, "lon": 80.0442, "display_name": "SRM Institute of Science and Technology, Kattankulathur, Chennai, Tamil Nadu, India", "type": "university", "class": "amenity"},
+        "srm university kattankulathur chennai": {"lat": 12.8231, "lon": 80.0442, "display_name": "SRM Institute of Science and Technology, Kattankulathur, Chennai, Tamil Nadu, India", "type": "university", "class": "amenity"},
+        "srm trichy": {"lat": 10.8072, "lon": 78.6880, "display_name": "SRM University Trichy Campus, Tiruchirappalli, Tamil Nadu, India", "type": "university", "class": "amenity"},
+        "srm trichy campus": {"lat": 10.8072, "lon": 78.6880, "display_name": "SRM University Trichy Campus, Tiruchirappalli, Tamil Nadu, India", "type": "university", "class": "amenity"},
+        "trichy campus": {"lat": 10.8072, "lon": 78.6880, "display_name": "SRM University Trichy Campus, Tiruchirappalli, Tamil Nadu, India", "type": "university", "class": "amenity"},
+        "srm ramapuram": {"lat": 13.0325, "lon": 80.1790, "display_name": "SRM University Ramapuram Campus, Chennai, Tamil Nadu, India", "type": "university", "class": "amenity"},
+        "srm vadapalani": {"lat": 13.0520, "lon": 80.2120, "display_name": "SRM University Vadapalani Campus, Chennai, Tamil Nadu, India", "type": "university", "class": "amenity"},
     }
+    # Check exact match first
     if city_lower in SRM_LOCATIONS:
         result = SRM_LOCATIONS[city_lower]
         _geo_cache[city_lower] = result
         return result
+    # Check fuzzy SRM match (e.g. "srm university, kattankulathur, chennai" variations)
+    for key, val in SRM_LOCATIONS.items():
+        if key in city_lower or city_lower in key:
+            _geo_cache[city_lower] = val
+            return val
     
     # Try multiple search strategies in order
     search_queries = [
@@ -1847,18 +1862,21 @@ async def get_language_tips_endpoint(city: str):
 @app.post("/nearby")
 async def get_nearby(request: NearbyRequest):
     """Get nearby places based on user's current location OR a text location name.
-    Supports GPS coordinates, text location search, or destination city name."""
+    Supports GPS coordinates, text location search, or destination city name.
+    Returns the searched location itself as a pinned first result when applicable."""
     start_time = time.time()
     
     lat = request.lat
     lon = request.lon
     resolved_location = ""
+    searched_place_name = ""
     
     # If coordinates are not provided, try text-based resolution
     if lat is None or lon is None or (abs(lat) < 0.001 and abs(lon) < 0.001):
         # Try location_name first, then destination
         search_text = request.location_name or request.destination
         if search_text:
+            searched_place_name = search_text
             geo = await geocode_city_fast(search_text)
             if geo:
                 lat, lon = geo["lat"], geo["lon"]
@@ -1876,12 +1894,38 @@ async def get_nearby(request: NearbyRequest):
         result = await get_nearby_places(lat, lon, 15000)
         radius = 15000
     
+    # PIN the searched location as the first result if it's a specific place
+    all_places = result["all"]
+    if resolved_location and searched_place_name:
+        # Check if the searched place is a specific named location (not just a city)
+        lower_search = searched_place_name.lower().strip()
+        major_cities = {"delhi", "mumbai", "chennai", "kolkata", "bangalore", "bengaluru",
+                       "hyderabad", "pune", "goa", "jaipur", "ahmedabad"}
+        is_specific_place = lower_search not in major_cities
+        if is_specific_place:
+            # Insert the searched location as the top pinned result
+            pinned = {
+                "name": searched_place_name,
+                "type": "searched_location",
+                "lat": lat,
+                "lon": lon,
+                "description": f"📍 {resolved_location}",
+                "distance_m": 0,
+                "quality_score": 100,
+                "rating": 5.0,
+                "photo": "",
+                "pinned": True,
+            }
+            # Remove any duplicates of the same name from results
+            all_places = [p for p in all_places if p.get("name", "").lower() != lower_search]
+            all_places.insert(0, pinned)
+    
     elapsed = round(time.time() - start_time, 2)
     return {
         "success": True,
-        "places": result["all"],
+        "places": all_places,
         "categorized": result["categorized"],
-        "count": len(result["all"]),
+        "count": len(all_places),
         "total_found": result["total"],
         "radius_m": radius,
         "coordinates": {"lat": lat, "lon": lon},
@@ -1910,49 +1954,54 @@ async def generate_trip(request: TripRequest):
         # CRITICAL: Smart extraction that doesn't confuse state names with country names
         city = raw_destination  # Default: use what user typed
         
-        # Country/region names to exclude from city extraction
-        country_names = {"india", "united states", "united kingdom", "france", "japan", "china",
-                        "thailand", "indonesia", "italy", "spain", "turkey", "germany", "australia",
-                        "brazil", "canada", "mexico", "russia", "south africa", "egypt", "morocco",
-                        "sri lanka", "nepal", "bangladesh", "pakistan", "myanmar", "cambodia", "vietnam",
-                        "south korea", "north korea", "new zealand", "argentina", "chile", "colombia",
-                        "peru", "portugal", "netherlands", "belgium", "switzerland", "austria", "greece",
-                        "czech republic", "poland", "sweden", "norway", "denmark", "finland", "ireland",
-                        "scotland", "wales", "england"}
-        admin_words = {"district", "tehsil", "ward", "state", "pin", "taluk", "division",
-                      "zone", "region", "province", "county", "department", "prefecture",
-                      "municipality", "block", "circle", "sub-division", "mandal"}
-        
-        if geo:
-            display = geo.get("display_name", "")
-            addr = geo.get("address", {})
-            parts = [p.strip() for p in display.split(",")]
+        # First: Try the smart place-to-city mapper (handles SRM → Chennai, etc.)
+        mapped_city = extract_nearest_city(raw_destination)
+        if mapped_city and mapped_city.lower() != raw_destination.lower().strip():
+            city = mapped_city
+        else:
+            # Country/region names to exclude from city extraction
+            country_names = {"india", "united states", "united kingdom", "france", "japan", "china",
+                            "thailand", "indonesia", "italy", "spain", "turkey", "germany", "australia",
+                            "brazil", "canada", "mexico", "russia", "south africa", "egypt", "morocco",
+                            "sri lanka", "nepal", "bangladesh", "pakistan", "myanmar", "cambodia", "vietnam",
+                            "south korea", "north korea", "new zealand", "argentina", "chile", "colombia",
+                            "peru", "portugal", "netherlands", "belgium", "switzerland", "austria", "greece",
+                            "czech republic", "poland", "sweden", "norway", "denmark", "finland", "ireland",
+                            "scotland", "wales", "england"}
+            admin_words = {"district", "tehsil", "ward", "state", "pin", "taluk", "division",
+                          "zone", "region", "province", "county", "department", "prefecture",
+                          "municipality", "block", "circle", "sub-division", "mandal"}
             
-            # Strategy 1: Use address fields if available (most reliable)
-            addr_city = (addr.get("city") or addr.get("town") or addr.get("village") 
-                        or addr.get("municipality") or addr.get("county") or "")
-            
-            # Strategy 2: For states/regions (like Goa), the raw_destination IS the city
-            geo_type = geo.get("type", "")
-            geo_class = geo.get("class", "")
-            if geo_type in ("administrative", "state", "boundary") or geo_class == "boundary":
-                # User typed a state/region name — use it directly for attraction search
-                city = raw_destination
-            elif addr_city and addr_city.lower() not in country_names:
-                city = addr_city
-            elif len(parts) > 0:
-                # Try to find a valid city from display_name parts, skipping countries and admin terms
-                city_candidates = [p for p in parts if len(p.strip()) > 2 
-                                  and p.strip().lower() not in country_names
-                                  and not p.strip().isdigit()
-                                  and not any(aw in p.strip().lower() for aw in admin_words)]
-                if city_candidates:
-                    # First candidate is usually the specific place, second is often the city
-                    # But if user typed a simple name like "Goa", prefer their input
-                    if len(raw_destination.split()) <= 2 and len(raw_destination) < 20:
-                        city = raw_destination  # User's input is clean enough
-                    else:
-                        city = city_candidates[0] if len(city_candidates) == 1 else city_candidates[1] if len(city_candidates) > 1 else city_candidates[0]
+            if geo:
+                display = geo.get("display_name", "")
+                addr = geo.get("address", {})
+                parts = [p.strip() for p in display.split(",")]
+                
+                # Strategy 1: Use address fields if available (most reliable)
+                addr_city = (addr.get("city") or addr.get("town") or addr.get("village") 
+                            or addr.get("municipality") or addr.get("county") or "")
+                
+                # Strategy 2: For states/regions (like Goa), the raw_destination IS the city
+                geo_type = geo.get("type", "")
+                geo_class = geo.get("class", "")
+                if geo_type in ("administrative", "state", "boundary") or geo_class == "boundary":
+                    # User typed a state/region name — use it directly for attraction search
+                    city = raw_destination
+                elif addr_city and addr_city.lower() not in country_names:
+                    city = addr_city
+                elif len(parts) > 0:
+                    # Try to find a valid city from display_name parts, skipping countries and admin terms
+                    city_candidates = [p for p in parts if len(p.strip()) > 2 
+                                      and p.strip().lower() not in country_names
+                                      and not p.strip().isdigit()
+                                      and not any(aw in p.strip().lower() for aw in admin_words)]
+                    if city_candidates:
+                        # First candidate is usually the specific place, second is often the city
+                        # But if user typed a simple name like "Goa", prefer their input
+                        if len(raw_destination.split()) <= 2 and len(raw_destination) < 20:
+                            city = raw_destination  # User's input is clean enough
+                        else:
+                            city = city_candidates[0] if len(city_candidates) == 1 else city_candidates[1] if len(city_candidates) > 1 else city_candidates[0]
         
         # Also geocode origin if provided
         origin_geo = None
@@ -1988,8 +2037,39 @@ async def generate_trip(request: TripRequest):
         
         await agent_manager.broadcast("research", f"Found {len(attractions)} unique attractions via APIs")
         
-        # Build itinerary — ZERO REPEATS, quality-sorted distribution
-        # Sort by quality first, then distribute top attractions across days
+        # Build itinerary — ZERO REPEATS, nearest-neighbor route optimization
+        # 1. Sort by quality first to pick the best attractions
+        # 2. Use nearest-neighbor TSP to order activities per day for minimum travel
+        import math
+        
+        def _haversine_km(lat1, lon1, lat2, lon2):
+            """Haversine distance in km between two GPS points"""
+            R = 6371
+            dlat = math.radians(lat2 - lat1)
+            dlon = math.radians(lon2 - lon1)
+            a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
+            return R * 2 * math.asin(math.sqrt(a))
+        
+        def _nearest_neighbor_order(places):
+            """Nearest-neighbor TSP: reorder places so each next place is closest to current"""
+            if len(places) <= 2:
+                return places
+            ordered = [places[0]]
+            remaining = list(places[1:])
+            while remaining:
+                current = ordered[-1]
+                curr_lat = current.get("lat", 0)
+                curr_lon = current.get("lon", 0)
+                nearest_idx = 0
+                nearest_dist = float('inf')
+                for idx, p in enumerate(remaining):
+                    d = _haversine_km(curr_lat, curr_lon, p.get("lat", 0), p.get("lon", 0))
+                    if d < nearest_dist:
+                        nearest_dist = d
+                        nearest_idx = idx
+                ordered.append(remaining.pop(nearest_idx))
+            return ordered
+        
         sorted_attractions = sorted(attractions, key=lambda x: (-x.get("quality", 1), -x.get("rating", 0)))
         acts_per_day = max(3, min(5, len(sorted_attractions) // max(duration, 1)))
         
@@ -2000,30 +2080,34 @@ async def generate_trip(request: TripRequest):
         # Global used-names set ensures ZERO duplicates across ALL days
         used_names = set()
         
+        # Phase 1: Assign attractions to days (quality-sorted distribution)
+        all_day_selections = []
         for day_num in range(duration):
-            date = start + timedelta(days=day_num)
-            day_activities = []
-            
-            # Pick unique attractions for this day
-            # Distribute top attractions evenly: Day1 gets #1,#3,#5, Day2 gets #2,#4,#6 etc.
             selected = []
             for attr in sorted_attractions:
                 if attr["name"] not in used_names and len(selected) < acts_per_day:
                     selected.append(attr)
                     used_names.add(attr["name"])
             
-            # If we've used all attractions and still need more days,
-            # re-fetch or just have fewer activities
+            # If we've used all attractions and still need more days
             if len(selected) < 2 and len(used_names) >= len(sorted_attractions):
-                # Allow reuse only if absolutely necessary (all used up)
                 remaining = [a for a in sorted_attractions if a["name"] not in {s["name"] for s in selected}]
                 if not remaining:
-                    remaining = sorted_attractions  # All used, allow reuse
+                    remaining = sorted_attractions
                 for attr in remaining:
                     if len(selected) >= 3:
                         break
                     if attr["name"] not in {s["name"] for s in selected}:
                         selected.append(attr)
+            
+            # Phase 2: Reorder this day's attractions using nearest-neighbor for efficient routing
+            selected = _nearest_neighbor_order(selected)
+            all_day_selections.append(selected)
+        
+        for day_num in range(duration):
+            date = start + timedelta(days=day_num)
+            day_activities = []
+            selected = all_day_selections[day_num] if day_num < len(all_day_selections) else []
             
             daily_cost = 0
             for i, attr in enumerate(selected):
@@ -2404,8 +2488,160 @@ def _gen_id(prefix: str = "BK") -> str:
 def _price_jitter(base: float, low: float = 0.8, high: float = 1.3) -> float:
     return round(base * (low + random.random() * (high - low)), -1)
 
+# ============================================
+# SMART CITY + AIRPORT CODE MAPPER
+# ============================================
+CITY_AIRPORT_MAP = {
+    # India
+    "delhi": "DEL", "new delhi": "DEL", "noida": "DEL", "gurgaon": "DEL", "gurugram": "DEL",
+    "mumbai": "BOM", "navi mumbai": "BOM", "thane": "BOM",
+    "chennai": "MAA", "kattankulathur": "MAA", "tambaram": "MAA", "srm": "MAA", "srmist": "MAA",
+    "srm university": "MAA", "srm kattankulathur": "MAA", "kelambakkam": "MAA", "chengalpattu": "MAA",
+    "vadapalani": "MAA", "adyar": "MAA", "mylapore": "MAA", "guindy": "MAA", "velachery": "MAA",
+    "thiruvanmiyur": "MAA", "t nagar": "MAA", "anna nagar": "MAA", "porur": "MAA", "chrompet": "MAA",
+    "srm ramapuram": "MAA", "srm vadapalani": "MAA", "mahabalipuram": "MAA",
+    "bangalore": "BLR", "bengaluru": "BLR",
+    "hyderabad": "HYD", "secunderabad": "HYD",
+    "kolkata": "CCU",
+    "goa": "GOI", "panaji": "GOI", "margao": "GOI",
+    "jaipur": "JAI",
+    "ahmedabad": "AMD",
+    "pune": "PNQ",
+    "lucknow": "LKO",
+    "kochi": "COK", "ernakulam": "COK",
+    "thiruvananthapuram": "TRV", "trivandrum": "TRV",
+    "varanasi": "VNS",
+    "agra": "AGR",
+    "amritsar": "ATQ",
+    "indore": "IDR",
+    "bhopal": "BHO",
+    "chandigarh": "IXC",
+    "coimbatore": "CJB",
+    "trichy": "TRZ", "tiruchirappalli": "TRZ", "srm trichy": "TRZ", "srm trichy campus": "TRZ", "trichy campus": "TRZ",
+    "madurai": "IXM",
+    "visakhapatnam": "VTZ", "vizag": "VTZ",
+    "bhubaneswar": "BBI",
+    "patna": "PAT",
+    "ranchi": "IXR",
+    "nagpur": "NAG",
+    "srinagar": "SXR",
+    "shimla": "SLV",
+    "dehradun": "DED",
+    "udaipur": "UDR",
+    "jodhpur": "JDH",
+    "mangalore": "IXE",
+    "mysore": "MYQ", "mysuru": "MYQ",
+    # International
+    "dubai": "DXB", "bangkok": "BKK", "singapore": "SIN", "london": "LHR",
+    "paris": "CDG", "tokyo": "NRT", "new york": "JFK", "sydney": "SYD",
+    "rome": "FCO", "istanbul": "IST", "barcelona": "BCN", "amsterdam": "AMS",
+    "kuala lumpur": "KUL", "hong kong": "HKG", "seoul": "ICN",
+    "kathmandu": "KTM", "colombo": "CMB", "bali": "DPS",
+}
+
+# Railway station codes
+CITY_RAILWAY_MAP = {
+    "chennai": "MAS", "delhi": "NDLS", "new delhi": "NDLS", "mumbai": "CSTM",
+    "kolkata": "HWH", "bangalore": "SBC", "bengaluru": "SBC", "hyderabad": "SC",
+    "goa": "MAO", "jaipur": "JP", "agra": "AGC", "varanasi": "BSB",
+    "lucknow": "LKO", "pune": "PUNE", "ahmedabad": "ADI", "kochi": "ERS",
+    "coimbatore": "CBE", "trichy": "TPJ", "srm trichy": "TPJ", "srm trichy campus": "TPJ", "trichy campus": "TPJ",
+    "madurai": "MDU", "amritsar": "ASR",
+    "chandigarh": "CDG", "bhopal": "BPL", "indore": "INDB", "nagpur": "NGP",
+    "visakhapatnam": "VSKP", "bhubaneswar": "BBS", "patna": "PNBE",
+    "thiruvananthapuram": "TVC", "srm": "MAS", "srmist": "MAS",
+    "srm university": "MAS", "kattankulathur": "MAS", "tambaram": "TBM",
+    "udaipur": "UDZ", "jodhpur": "JU", "shimla": "SML",
+}
+
+def resolve_airport_code(city_name: str) -> str:
+    """Convert city name to airport code. Handles specific places like 'SRM University Chennai'"""
+    lower = city_name.lower().strip()
+    # Direct match
+    if lower in CITY_AIRPORT_MAP:
+        return CITY_AIRPORT_MAP[lower]
+    # Try partial match - longest keys first to avoid false matches (e.g., 'srm trichy' matching 'srm' before 'trichy')
+    sorted_keys = sorted(CITY_AIRPORT_MAP.keys(), key=len, reverse=True)
+    for key in sorted_keys:
+        if key in lower:
+            return CITY_AIRPORT_MAP[key]
+    # Fallback: first 3 chars uppercase
+    return city_name.strip()[:3].upper()
+
+def resolve_railway_code(city_name: str) -> str:
+    """Convert city name to railway station code"""
+    lower = city_name.lower().strip()
+    if lower in CITY_RAILWAY_MAP:
+        return CITY_RAILWAY_MAP[lower]
+    # Longest key first to avoid partial false matches
+    sorted_keys = sorted(CITY_RAILWAY_MAP.keys(), key=len, reverse=True)
+    for key in sorted_keys:
+        if key in lower:
+            return CITY_RAILWAY_MAP[key]
+    return city_name.strip()
+
+def extract_nearest_city(place_name: str) -> str:
+    """Extract the nearest major city from a specific place name.
+    'SRM University Kattankulathur Chennai' -> 'Chennai'
+    'Vadapalani' -> 'Chennai' (known Chennai locality)
+    'IIT Bombay' -> 'Mumbai'
+    """
+    lower = place_name.lower().strip()
+    
+    # Known campus/locality to city mappings
+    PLACE_TO_CITY = {
+        "srm": "Chennai", "srmist": "Chennai", "srm university": "Chennai",
+        "kattankulathur": "Chennai", "kelambakkam": "Chennai", "tambaram": "Chennai",
+        "vadapalani": "Chennai", "t nagar": "Chennai", "mylapore": "Chennai",
+        "anna nagar": "Chennai", "adyar": "Chennai", "guindy": "Chennai",
+        "velachery": "Chennai", "porur": "Chennai", "chrompet": "Chennai",
+        "perungudi": "Chennai", "thiruvanmiyur": "Chennai", "medavakkam": "Chennai",
+        "sholinganallur": "Chennai", "omr": "Chennai", "ecr": "Chennai",
+        "mahabalipuram": "Chennai", "chengalpattu": "Chennai",
+        "srm trichy": "Trichy", "trichy campus": "Trichy",
+        "srm ramapuram": "Chennai", "srm vadapalani": "Chennai",
+        "iit bombay": "Mumbai", "iit madras": "Chennai", "iit delhi": "Delhi",
+        "iit kanpur": "Kanpur", "iit kharagpur": "Kolkata",
+        "bits pilani": "Pilani", "bits goa": "Goa", "bits hyderabad": "Hyderabad",
+        "vit vellore": "Vellore", "vit chennai": "Chennai",
+        "anna university": "Chennai", "loyola college": "Chennai",
+        "connaught place": "Delhi", "cp delhi": "Delhi",
+        "bandra": "Mumbai", "andheri": "Mumbai", "colaba": "Mumbai",
+        "koramangala": "Bangalore", "indiranagar": "Bangalore", "whitefield": "Bangalore",
+        "banjara hills": "Hyderabad", "hitech city": "Hyderabad",
+        "salt lake": "Kolkata", "park street": "Kolkata",
+        "mg road": "Bangalore",
+    }
+    
+    # Direct match
+    if lower in PLACE_TO_CITY:
+        return PLACE_TO_CITY[lower]
+    
+    # Check if any known place key is in the input
+    for key, city in PLACE_TO_CITY.items():
+        if key in lower:
+            return city
+    
+    # Check if input already contains a major city name
+    major_cities = ["chennai", "mumbai", "delhi", "bangalore", "bengaluru", "hyderabad",
+                    "kolkata", "pune", "goa", "jaipur", "agra", "varanasi", "lucknow",
+                    "kochi", "shimla", "manali", "udaipur", "trichy", "coimbatore",
+                    "madurai", "pondicherry", "ahmedabad", "chandigarh", "amritsar"]
+    for city in major_cities:
+        if city in lower:
+            return city.title()
+    
+    # Return as-is
+    return place_name.strip()
+
 # ---------- Flight search (simulated realistic data) ----------
 async def _search_flights(req: FlightSearchRequest) -> List[Dict]:
+    # Resolve airport codes from city names
+    origin_code = resolve_airport_code(req.origin)
+    dest_code = resolve_airport_code(req.destination)
+    origin_city = extract_nearest_city(req.origin) if len(req.origin) > 3 else req.origin
+    dest_city = extract_nearest_city(req.destination) if len(req.destination) > 3 else req.destination
+    
     airlines_domestic = [
         {"name": "IndiGo", "code": "6E", "logo": "indigo"},
         {"name": "Air India", "code": "AI", "logo": "airindia"},
@@ -2425,11 +2661,51 @@ async def _search_flights(req: FlightSearchRequest) -> List[Dict]:
         {"name": "Air India", "code": "AI", "logo": "airindia"},
     ]
     dest_lower = req.destination.lower()
-    is_intl = not any(c in dest_lower for c in ["delhi", "mumbai", "goa", "jaipur", "chennai", "bangalore",
-                       "kolkata", "hyderabad", "udaipur", "varanasi", "agra", "lucknow", "amritsar",
-                       "pune", "kochi", "shimla", "manali", "rishikesh", "bhubaneswar"])
+    origin_lower = req.origin.lower()
+    indian_cities = ["delhi", "mumbai", "goa", "jaipur", "chennai", "bangalore", "bengaluru",
+                     "kolkata", "hyderabad", "udaipur", "varanasi", "agra", "lucknow", "amritsar",
+                     "pune", "kochi", "shimla", "manali", "rishikesh", "bhubaneswar", "srm",
+                     "srmist", "kattankulathur", "trichy", "coimbatore", "madurai", "chandigarh",
+                     "indore", "bhopal", "nagpur", "visakhapatnam", "patna", "ahmedabad",
+                     "thiruvananthapuram", "trivandrum", "vadapalani", "tambaram"]
+    is_intl = not any(c in dest_lower for c in indian_cities)
     pool = airlines_intl if is_intl else airlines_domestic
-    base = 12000 if is_intl else 3500
+    
+    # --- Realistic route-based pricing ---
+    # Distance-based pricing (approximate air km between major Indian cities)
+    ROUTE_DISTANCE_KM = {
+        ("DEL", "MAA"): 1760, ("DEL", "BOM"): 1150, ("DEL", "BLR"): 1740,
+        ("DEL", "HYD"): 1260, ("DEL", "CCU"): 1310, ("DEL", "GOI"): 1500,
+        ("DEL", "COK"): 2060, ("DEL", "TRZ"): 1680, ("DEL", "IXM"): 1830,
+        ("DEL", "JAI"): 260, ("DEL", "AMD"): 770, ("DEL", "LKO"): 420,
+        ("DEL", "VNS"): 680, ("DEL", "PNQ"): 1170, ("DEL", "ATQ"): 400,
+        ("BOM", "MAA"): 1030, ("BOM", "BLR"): 840, ("BOM", "HYD"): 620,
+        ("BOM", "CCU"): 1660, ("BOM", "GOI"): 440, ("BOM", "DEL"): 1150,
+        ("BOM", "COK"): 920, ("BOM", "PNQ"): 120,
+        ("MAA", "BLR"): 290, ("MAA", "HYD"): 520, ("MAA", "CCU"): 1360,
+        ("MAA", "GOI"): 880, ("MAA", "COK"): 530, ("MAA", "TRZ"): 280,
+        ("MAA", "IXM"): 420, ("MAA", "DEL"): 1760, ("MAA", "BOM"): 1030,
+        ("BLR", "HYD"): 500, ("BLR", "CCU"): 1560, ("BLR", "GOI"): 520,
+        ("BLR", "DEL"): 1740, ("BLR", "BOM"): 840, ("BLR", "MAA"): 290,
+        ("HYD", "GOI"): 530, ("HYD", "CCU"): 1190, ("HYD", "BLR"): 500,
+        ("HYD", "MAA"): 520, ("HYD", "DEL"): 1260, ("HYD", "BOM"): 620,
+        ("CCU", "BLR"): 1560, ("CCU", "MAA"): 1360, ("CCU", "HYD"): 1190,
+        ("CCU", "DEL"): 1310, ("CCU", "BOM"): 1660,
+    }
+    
+    def _get_route_price(orig: str, dest: str) -> float:
+        """Realistic base price from route distance"""
+        dist = ROUTE_DISTANCE_KM.get((orig, dest)) or ROUTE_DISTANCE_KM.get((dest, orig))
+        if dist:
+            # Indian domestic pricing: ~₹3.0-4.0 per km + base ₹1500
+            return 1500 + dist * random.uniform(3.0, 4.2)
+        return 3500  # fallback short-haul default
+    
+    if is_intl:
+        base = 12000
+    else:
+        base = _get_route_price(origin_code, dest_code)
+    
     if req.cabin_class == "business": base *= 3
     elif req.cabin_class == "first": base *= 6
 
@@ -2439,25 +2715,47 @@ async def _search_flights(req: FlightSearchRequest) -> List[Dict]:
     chosen = random.sample(pool, min(len(pool), random.randint(4, 6)))
     for i, airline in enumerate(chosen):
         dep = dep_times[i % len(dep_times)]
-        dur_h = random.randint(1, 4) if not is_intl else random.randint(4, 14)
+        # Duration based on route distance
+        route_dist = ROUTE_DISTANCE_KM.get((origin_code, dest_code)) or ROUTE_DISTANCE_KM.get((dest_code, origin_code))
+        if is_intl:
+            dur_h = random.randint(4, 14)
+        elif route_dist:
+            base_hours = max(1, route_dist / 700)  # ~700 km/h cruise
+            dur_h = max(1, int(base_hours + random.uniform(-0.3, 0.5)))
+        else:
+            dur_h = random.randint(1, 4)
         dur_m = random.choice([0, 15, 30, 45])
         dep_h, dep_min = int(dep.split(":")[0]), int(dep.split(":")[1])
         arr_h = (dep_h + dur_h + (dep_min + dur_m) // 60) % 24
         arr_m = (dep_min + dur_m) % 60
-        price = _price_jitter(base)
+        # Each airline has its own price variation
+        price = _price_jitter(base, 0.85, 1.35)
         stops = 0 if dur_h <= 3 else random.choice([0, 1, 1])
+        
+        # Build provider booking URLs
+        dep_date = req.departure_date or ""
+        booking_urls = {
+            "google_flights": f"https://www.google.com/travel/flights?q=flights+from+{origin_code}+to+{dest_code}+on+{dep_date}",
+            "skyscanner": f"https://www.skyscanner.co.in/transport/flights/{origin_code.lower()}/{dest_code.lower()}/{dep_date.replace('-', '')}/",
+            "makemytrip": f"https://www.makemytrip.com/flight/search?itinerary={origin_code}-{dest_code}-{dep_date}&tripType=O&paxType=A-1_C-0_I-0&cabinClass={req.cabin_class.upper()[0]}",
+            "cleartrip": f"https://www.cleartrip.com/flights/{origin_city.lower().replace(' ','-')}-to-{dest_city.lower().replace(' ','-')}-{dep_date}/",
+            "ixigo": f"https://www.ixigo.com/search/result/flight/{origin_code}/{dest_code}/{dep_date}/1/0/0/{req.cabin_class[0].upper()}/1",
+        }
+        
         flights.append({
             "id": _gen_id("FL"),
             "airline": airline["name"],
             "airline_code": airline["code"],
             "flight_no": f'{airline["code"]}{random.randint(100, 999)}',
-            "origin": req.origin or "DEL",
-            "destination": req.destination,
+            "origin": origin_code,
+            "origin_city": origin_city,
+            "destination": dest_code,
+            "destination_city": dest_city,
             "departure": dep,
             "arrival": f"{arr_h:02d}:{arr_m:02d}",
             "duration": f"{dur_h}h {dur_m}m",
             "stops": stops,
-            "stop_info": "" if stops == 0 else random.choice(["via Mumbai", "via Delhi", "via Dubai", "via Singapore"]),
+            "stop_info": "" if stops == 0 else random.choice(["via Mumbai", "via Delhi", "via Bangalore", "via Hyderabad"]),
             "price": price,
             "cabin_class": req.cabin_class,
             "seats_left": random.randint(2, 28),
@@ -2465,26 +2763,54 @@ async def _search_flights(req: FlightSearchRequest) -> List[Dict]:
             "meal": req.cabin_class != "economy",
             "refundable": random.choice([True, False]),
             "rating": round(3.8 + random.random() * 1.2, 1),
-            "booking_url": f"https://www.google.com/travel/flights?q=flights+to+{_quote_safe(req.destination)}",
+            "booking_url": booking_urls["google_flights"],
+            "booking_urls": booking_urls,
         })
     flights.sort(key=lambda f: f["price"])
     return flights
 
 # ---------- Hotel search ----------
 async def _search_hotels(req: HotelSearchRequest) -> List[Dict]:
+    dest_safe = _quote_safe(req.destination)
+    dest_enc = quote(req.destination)
+    
     hotel_chains = [
-        {"name": "OYO Rooms", "tier": 2, "base": 800},
-        {"name": "Treebo Hotels", "tier": 2, "base": 1200},
-        {"name": "FabHotel", "tier": 2, "base": 1000},
-        {"name": "Lemon Tree", "tier": 3, "base": 2500},
-        {"name": "Radisson", "tier": 4, "base": 5000},
-        {"name": "ITC Hotels", "tier": 5, "base": 8000},
-        {"name": "Taj Hotels", "tier": 5, "base": 12000},
-        {"name": "The Oberoi", "tier": 5, "base": 15000},
-        {"name": "Marriott", "tier": 4, "base": 7000},
-        {"name": "Hyatt", "tier": 4, "base": 6500},
-        {"name": "Holiday Inn", "tier": 3, "base": 3500},
-        {"name": "ibis", "tier": 2, "base": 2000},
+        {"name": "OYO Rooms", "tier": 2, "base": 800,
+         "photo": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e1/OYO_Rooms_%28logo%29.png/220px-OYO_Rooms_%28logo%29.png",
+         "booking_tpl": f"https://www.oyorooms.com/search?location={dest_enc}"},
+        {"name": "Treebo Hotels", "tier": 2, "base": 1200,
+         "photo": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/24/Treebo_Hotels_Logo_-_New.png/220px-Treebo_Hotels_Logo_-_New.png",
+         "booking_tpl": f"https://www.treebo.com/hotels-in-{req.destination.lower().replace(' ', '-')}/"},
+        {"name": "FabHotel", "tier": 2, "base": 1000,
+         "photo": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f7/FabHotels_logo.png/220px-FabHotels_logo.png",
+         "booking_tpl": f"https://www.fabhotels.com/hotels-in-{req.destination.lower().replace(' ', '-')}"},
+        {"name": "Lemon Tree", "tier": 3, "base": 2500,
+         "photo": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d2/Lemon_Tree_Hotels_logo.svg/220px-Lemon_Tree_Hotels_logo.svg.png",
+         "booking_tpl": f"https://www.lemontreehotels.com/search?city={dest_enc}"},
+        {"name": "Radisson", "tier": 4, "base": 5000,
+         "photo": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Radisson_logo.svg/220px-Radisson_logo.svg.png",
+         "booking_tpl": f"https://www.radissonhotels.com/en-us/search?searchTerm={dest_enc}"},
+        {"name": "ITC Hotels", "tier": 5, "base": 8000,
+         "photo": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0a/ITC_Hotels.svg/220px-ITC_Hotels.svg.png",
+         "booking_tpl": f"https://www.itchotels.com/in/en/search?destination={dest_enc}"},
+        {"name": "Taj Hotels", "tier": 5, "base": 12000,
+         "photo": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/5c/Taj_Hotels_logo.svg/220px-Taj_Hotels_logo.svg.png",
+         "booking_tpl": f"https://www.tajhotels.com/en-in/search/hotels/?destination={dest_enc}"},
+        {"name": "The Oberoi", "tier": 5, "base": 15000,
+         "photo": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/5a/EIH_Limited_%28The_Oberoi_Group%29_logo.svg/220px-EIH_Limited_%28The_Oberoi_Group%29_logo.svg.png",
+         "booking_tpl": f"https://www.oberoihotels.com/find-a-hotel/?q={dest_enc}"},
+        {"name": "Marriott", "tier": 4, "base": 7000,
+         "photo": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/45/Marriott-Logo.svg/220px-Marriott-Logo.svg.png",
+         "booking_tpl": f"https://www.marriott.com/search/default.mi?destinationAddress={dest_enc}"},
+        {"name": "Hyatt", "tier": 4, "base": 6500,
+         "photo": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f0/Hyatt_Logo.svg/220px-Hyatt_Logo.svg.png",
+         "booking_tpl": f"https://www.hyatt.com/explore-hotels?location={dest_enc}"},
+        {"name": "Holiday Inn", "tier": 3, "base": 3500,
+         "photo": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f8/Holiday_Inn_Logo.svg/220px-Holiday_Inn_Logo.svg.png",
+         "booking_tpl": f"https://www.ihg.com/holidayinn/hotels/search?destination={dest_enc}"},
+        {"name": "ibis", "tier": 2, "base": 2000,
+         "photo": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6e/Ibis_Hotel_2012_logo.svg/220px-Ibis_Hotel_2012_logo.svg.png",
+         "booking_tpl": f"https://all.accor.com/ibis/search?destination={dest_enc}"},
     ]
     if req.persona == "luxury":
         pool = [h for h in hotel_chains if h["tier"] >= 4]
@@ -2510,6 +2836,17 @@ async def _search_hotels(req: HotelSearchRequest) -> List[Dict]:
         ppn = _price_jitter(h["base"])
         stars = h["tier"]
         n_amenities = min(len(amenity_pool), stars + random.randint(2, 5))
+        
+        # Build multiple booking URLs
+        hotel_booking_urls = {
+            "direct": h.get("booking_tpl", ""),
+            "booking_com": f"https://www.booking.com/searchresults.html?ss={dest_safe}",
+            "makemytrip": f"https://www.makemytrip.com/hotels/hotel-listing/?city={dest_enc}",
+            "goibibo": f"https://www.goibibo.com/hotels/hotels-in-{req.destination.lower().replace(' ', '-')}/",
+            "google_hotels": f"https://www.google.com/travel/hotels/{dest_enc}",
+            "agoda": f"https://www.agoda.com/search?city={dest_enc}",
+        }
+        
         hotels.append({
             "id": _gen_id("HT"),
             "name": f'{h["name"]} {req.destination}',
@@ -2526,8 +2863,9 @@ async def _search_hotels(req: HotelSearchRequest) -> List[Dict]:
             "free_cancellation": random.choice([True, True, False]),
             "pay_at_hotel": random.choice([True, False]),
             "distance_center": f"{round(random.uniform(0.5, 8.0), 1)} km from center",
-            "photo": "",
-            "booking_url": f"https://www.booking.com/searchresults.html?ss={_quote_safe(req.destination)}",
+            "photo": h.get("photo", ""),
+            "booking_url": h.get("booking_tpl", f"https://www.booking.com/searchresults.html?ss={dest_safe}"),
+            "booking_urls": hotel_booking_urls,
         })
     hotels.sort(key=lambda h: h["price_per_night"])
     return hotels
@@ -2578,6 +2916,12 @@ async def _search_cabs(req: CabSearchRequest) -> List[Dict]:
 
 # ---------- Train search (simulated Indian Railways) ----------
 async def _search_trains(req: TrainSearchRequest) -> List[Dict]:
+    # Resolve station codes
+    origin_code = resolve_railway_code(req.origin)
+    dest_code = resolve_railway_code(req.destination)
+    origin_city = extract_nearest_city(req.origin) if len(req.origin) > 4 else req.origin
+    dest_city = extract_nearest_city(req.destination) if len(req.destination) > 4 else req.destination
+    
     train_types = [
         {"name": "Rajdhani Express", "code": "RAJ", "speed": "fast", "base": 1200, "class_mult": {"SL": 0.4, "3AC": 1.0, "2AC": 1.6, "1AC": 2.8, "CC": 0, "EC": 0}},
         {"name": "Shatabdi Express", "code": "SHT", "speed": "fast", "base": 900, "class_mult": {"SL": 0, "3AC": 0, "2AC": 0, "1AC": 0, "CC": 1.0, "EC": 1.8}},
@@ -2620,8 +2964,10 @@ async def _search_trains(req: TrainSearchRequest) -> List[Dict]:
             "train_name": f"{train['name']}",
             "train_number": train_no,
             "train_code": train["code"],
-            "origin": req.origin or "Unknown",
-            "destination": req.destination,
+            "origin": origin_city,
+            "origin_code": origin_code,
+            "destination": dest_city,
+            "destination_code": dest_code,
             "departure": dep,
             "arrival": f"{arr_h:02d}:{arr_m:02d}",
             "duration": f"{dur_h}h {dur_m}m",
@@ -2630,7 +2976,7 @@ async def _search_trains(req: TrainSearchRequest) -> List[Dict]:
             "available_classes": avail_classes,
             "price": price,
             "price_per_person": round(price / req.passengers),
-            "availability": random.choice(["Available", "Available", "RAC", "WL-" + str(random.randint(1, 30))]),
+            "availability": random.choice(["Available", "Available", "Available", "RAC", "WL-" + str(random.randint(1, 30))]),
             "pantry": train["speed"] == "fast",
             "stops": random.randint(2, 12) if train["speed"] != "fast" else random.randint(1, 5),
             "runs_on": random.choice(["Daily", "Mon,Wed,Fri,Sun", "Tue,Thu,Sat", "Daily except Sun"]),
@@ -2664,6 +3010,7 @@ def _process_payment(req: PaymentRequest) -> Dict:
 WORKFLOW_STEPS = [
     {"id": "trip_planned", "label": "Trip Planned", "icon": "🗺️", "agent": "planner"},
     {"id": "choose_flights", "label": "Choose Flights", "icon": "✈️", "agent": "booking"},
+    {"id": "choose_trains", "label": "Choose Trains", "icon": "🚂", "agent": "booking"},
     {"id": "choose_hotels", "label": "Choose Hotels", "icon": "🏨", "agent": "booking"},
     {"id": "choose_cabs", "label": "Book Local Transport", "icon": "🚗", "agent": "transport"},
     {"id": "review_cart", "label": "Review & Confirm", "icon": "🛒", "agent": "budget"},
