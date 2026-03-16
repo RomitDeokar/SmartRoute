@@ -31,6 +31,64 @@ const agenticState = {
     historyOpen: false,
 };
 
+// === SMART CITY EXTRACTION ===
+// Extracts the nearest major city from specific places (for booking flights/trains)
+function extractBookingCity(placeName) {
+    if (!placeName) return '';
+    const lower = placeName.toLowerCase().trim();
+    
+    // Known campus/locality to city mappings
+    const PLACE_TO_CITY = {
+        'srm': 'Chennai', 'srmist': 'Chennai', 'srm university': 'Chennai',
+        'kattankulathur': 'Chennai', 'kelambakkam': 'Chennai', 'tambaram': 'Chennai',
+        'vadapalani': 'Chennai', 't nagar': 'Chennai', 'mylapore': 'Chennai',
+        'anna nagar': 'Chennai', 'adyar': 'Chennai', 'guindy': 'Chennai',
+        'velachery': 'Chennai', 'porur': 'Chennai', 'chrompet': 'Chennai',
+        'perungudi': 'Chennai', 'thiruvanmiyur': 'Chennai', 'medavakkam': 'Chennai',
+        'sholinganallur': 'Chennai', 'omr': 'Chennai', 'ecr': 'Chennai',
+        'mahabalipuram': 'Chennai', 'chengalpattu': 'Chennai',
+        'srm trichy': 'Trichy', 'trichy campus': 'Trichy',
+        'srm ramapuram': 'Chennai', 'srm vadapalani': 'Chennai',
+        'iit bombay': 'Mumbai', 'iit madras': 'Chennai', 'iit delhi': 'Delhi',
+        'bits pilani': 'Pilani', 'bits goa': 'Goa', 'bits hyderabad': 'Hyderabad',
+        'vit vellore': 'Vellore', 'vit chennai': 'Chennai',
+        'anna university': 'Chennai', 'loyola college': 'Chennai',
+        'connaught place': 'Delhi', 'cp delhi': 'Delhi',
+        'bandra': 'Mumbai', 'andheri': 'Mumbai', 'colaba': 'Mumbai',
+        'koramangala': 'Bangalore', 'indiranagar': 'Bangalore', 'whitefield': 'Bangalore',
+        'banjara hills': 'Hyderabad', 'hitech city': 'Hyderabad',
+        'salt lake': 'Kolkata', 'park street': 'Kolkata',
+        'mg road': 'Bangalore', 'marina beach': 'Chennai', 'besant nagar': 'Chennai',
+        'taj mahal': 'Agra', 'gateway of india': 'Mumbai', 'india gate': 'Delhi',
+        'qutub minar': 'Delhi', 'hawa mahal': 'Jaipur', 'amber fort': 'Jaipur',
+    };
+    
+    // Direct match
+    if (PLACE_TO_CITY[lower]) return PLACE_TO_CITY[lower];
+    
+    // Check if any known place key is in the input
+    for (const [key, city] of Object.entries(PLACE_TO_CITY)) {
+        if (lower.includes(key)) return city;
+    }
+    
+    // Check if input already contains a major city name
+    const majorCities = ['chennai', 'mumbai', 'delhi', 'bangalore', 'bengaluru', 'hyderabad',
+        'kolkata', 'pune', 'goa', 'jaipur', 'agra', 'varanasi', 'lucknow',
+        'kochi', 'shimla', 'manali', 'udaipur', 'trichy', 'coimbatore',
+        'madurai', 'pondicherry', 'ahmedabad', 'chandigarh', 'amritsar',
+        'bhopal', 'indore', 'nagpur', 'bhubaneswar', 'patna', 'dehradun',
+        'srinagar', 'jodhpur', 'mysore', 'mangalore', 'visakhapatnam',
+        'thiruvananthapuram', 'dubai', 'bangkok', 'singapore', 'london',
+        'paris', 'tokyo', 'new york', 'sydney', 'rome', 'istanbul',
+        'barcelona', 'amsterdam', 'bali', 'kathmandu', 'colombo'];
+    for (const city of majorCities) {
+        if (lower.includes(city)) return city.charAt(0).toUpperCase() + city.slice(1);
+    }
+    
+    // Return as-is (might already be a city name)
+    return placeName.trim();
+}
+
 // Expose to global scope for inline onclick handlers
 window.agenticState = agenticState;
 
@@ -95,9 +153,11 @@ function startAgenticWizard(dest, duration, budget, data) {
         return d.toISOString().split('T')[0];
     })();
 
-    // Store context
+    // Store context with smart city extraction for booking
     const origin = (typeof state !== 'undefined' && state.origin) ? state.origin : document.getElementById('origin')?.value || '';
-    agenticState.context = { dest, duration, budget, startDate, endDate, origin };
+    const destCity = extractBookingCity(dest) || dest;
+    const originCity = extractBookingCity(origin) || origin;
+    agenticState.context = { dest, destCity, duration, budget, startDate, endDate, origin, originCity };
 
     const originMsg = origin ? ` from <strong>${origin}</strong>` : '';
     showAgentPrompt(
@@ -129,13 +189,14 @@ window.agenticSearchFlights = async function() {
 
     try {
         const persona = (typeof state !== 'undefined' && state.persona) ? state.persona : 'solo';
-        const origin = ctx.origin || (typeof state !== 'undefined' && state.origin) || document.getElementById('origin')?.value || '';
-        const originCity = origin || 'Delhi'; // Fallback only if no origin at all
+        const rawOrigin = ctx.origin || (typeof state !== 'undefined' && state.origin) || document.getElementById('origin')?.value || '';
+        const originCity = ctx.originCity || extractBookingCity(rawOrigin) || rawOrigin || 'Delhi';
+        const destCity = ctx.destCity || extractBookingCity(ctx.dest) || ctx.dest;
         const res = await fetch(`${API_BASE}/agentic/flights/search`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 origin: originCity,
-                destination: ctx.dest,
+                destination: destCity,
                 departure_date: ctx.startDate,
                 return_date: ctx.endDate,
                 passengers: 1,
@@ -175,7 +236,9 @@ function renderFlightResults(flights) {
     if (!panel || !list) return;
     panel.style.display = 'block';
 
-    list.innerHTML = flights.map(f => `
+    list.innerHTML = flights.map(f => {
+        const bookingUrls = f.booking_urls || {};
+        return `
         <div class="flight-result-card ${agenticState.selections.flight?.id === f.id ? 'selected' : ''}" 
              onclick="selectFlight('${f.id}')" data-id="${f.id}">
             <div class="flight-airline">
@@ -206,9 +269,15 @@ function renderFlightResults(flights) {
                     ${f.refundable ? '<span class="flight-tag" style="color:var(--success)">Refundable</span>' : ''}
                     <span class="flight-tag">${f.seats_left} seats</span>
                 </div>
+                <div class="flight-booking-links" style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">
+                    <a href="${bookingUrls.google_flights || f.booking_url}" target="_blank" rel="noopener" class="flight-tag" style="color:#4285f4;text-decoration:none;cursor:pointer" onclick="event.stopPropagation()">🔗 Google Flights</a>
+                    ${bookingUrls.skyscanner ? `<a href="${bookingUrls.skyscanner}" target="_blank" rel="noopener" class="flight-tag" style="color:#0770e3;text-decoration:none;cursor:pointer" onclick="event.stopPropagation()">🔗 Skyscanner</a>` : ''}
+                    ${bookingUrls.makemytrip ? `<a href="${bookingUrls.makemytrip}" target="_blank" rel="noopener" class="flight-tag" style="color:#eb5b2d;text-decoration:none;cursor:pointer" onclick="event.stopPropagation()">🔗 MakeMyTrip</a>` : ''}
+                    ${bookingUrls.cleartrip ? `<a href="${bookingUrls.cleartrip}" target="_blank" rel="noopener" class="flight-tag" style="color:#e74c3c;text-decoration:none;cursor:pointer" onclick="event.stopPropagation()">🔗 Cleartrip</a>` : ''}
+                </div>
             </div>
-        </div>
-    `).join('');
+        </div>`;
+    }).join('');
 
     panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
@@ -294,10 +363,15 @@ function renderHotelResults(hotels) {
     if (!panel || !list) return;
     panel.style.display = 'block';
 
-    list.innerHTML = hotels.map(h => `
+    list.innerHTML = hotels.map(h => {
+        const photoHtml = h.photo
+            ? `<div class="hotel-thumb" style="background-image:url('${h.photo}');background-size:contain;background-repeat:no-repeat;background-position:center;min-width:60px;min-height:60px;border-radius:8px"></div>`
+            : `<div class="hotel-thumb">🏨</div>`;
+        const bookingUrls = h.booking_urls || {};
+        return `
         <div class="hotel-result-card ${agenticState.selections.hotel?.id === h.id ? 'selected' : ''}"
              onclick="selectHotel('${h.id}')" data-id="${h.id}">
-            <div class="hotel-thumb">🏨</div>
+            ${photoHtml}
             <div class="hotel-info">
                 <div class="hotel-name">${h.name}</div>
                 <div class="hotel-stars">${'⭐'.repeat(h.stars)} <span style="color:var(--text-2);font-size:0.72rem">${h.rating}/5 (${h.reviews_count.toLocaleString()} reviews)</span></div>
@@ -306,9 +380,15 @@ function renderHotelResults(hotels) {
                     ${h.amenities.slice(0, 5).map(a => `<span class="hotel-amenity-tag">${a}</span>`).join('')}
                     ${h.amenities.length > 5 ? `<span class="hotel-amenity-tag">+${h.amenities.length - 5}</span>` : ''}
                 </div>
-                <div style="display:flex;gap:6px;margin-top:4px">
+                <div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap">
                     ${h.free_cancellation ? '<span class="flight-tag" style="color:var(--success)">Free cancellation</span>' : ''}
                     ${h.pay_at_hotel ? '<span class="flight-tag">Pay at hotel</span>' : ''}
+                </div>
+                <div class="hotel-booking-links" style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">
+                    <a href="${h.booking_url || '#'}" target="_blank" rel="noopener" class="flight-tag" style="color:#003580;text-decoration:none;cursor:pointer;font-size:0.65rem" onclick="event.stopPropagation()">🔗 Book Direct</a>
+                    ${bookingUrls.booking_com ? `<a href="${bookingUrls.booking_com}" target="_blank" rel="noopener" class="flight-tag" style="color:#003580;text-decoration:none;cursor:pointer;font-size:0.65rem" onclick="event.stopPropagation()">🔗 Booking.com</a>` : ''}
+                    ${bookingUrls.makemytrip ? `<a href="${bookingUrls.makemytrip}" target="_blank" rel="noopener" class="flight-tag" style="color:#eb5b2d;text-decoration:none;cursor:pointer;font-size:0.65rem" onclick="event.stopPropagation()">🔗 MakeMyTrip</a>` : ''}
+                    ${bookingUrls.google_hotels ? `<a href="${bookingUrls.google_hotels}" target="_blank" rel="noopener" class="flight-tag" style="color:#4285f4;text-decoration:none;cursor:pointer;font-size:0.65rem" onclick="event.stopPropagation()">🔗 Google Hotels</a>` : ''}
                 </div>
             </div>
             <div class="hotel-price">
@@ -317,8 +397,8 @@ function renderHotelResults(hotels) {
                 <div class="hotel-price-total">Total: ₹${h.total_price.toLocaleString()}</div>
                 <div style="font-size:0.65rem;color:var(--text-3)">${h.nights} night${h.nights > 1 ? 's' : ''}</div>
             </div>
-        </div>
-    `).join('');
+        </div>`;
+    }).join('');
 
     panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
@@ -457,13 +537,15 @@ window.agenticSearchTrains = async function() {
 
     try {
         const persona = (typeof state !== 'undefined' && state.persona) ? state.persona : 'solo';
-        const origin = ctx.origin || (typeof state !== 'undefined' && state.origin) || document.getElementById('origin')?.value || 'Chennai';
+        const rawOrigin = ctx.origin || (typeof state !== 'undefined' && state.origin) || document.getElementById('origin')?.value || '';
+        const originCity = ctx.originCity || extractBookingCity(rawOrigin) || rawOrigin || 'Chennai';
+        const destCity = ctx.destCity || extractBookingCity(ctx.dest) || ctx.dest;
         const trainClass = persona === 'luxury' ? '1AC' : persona === 'family' ? '2AC' : '3AC';
         const res = await fetch(`${API_BASE}/agentic/trains/search`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                origin: origin,
-                destination: ctx.dest,
+                origin: originCity,
+                destination: destCity,
                 departure_date: ctx.startDate,
                 passengers: 1,
                 train_class: trainClass,
@@ -501,6 +583,9 @@ function renderTrainResults(trains) {
 
     list.innerHTML = trains.map(t => {
         const availClass = t.availability === 'Available' ? 'success' : (t.availability.startsWith('RAC') ? 'warning' : 'error');
+        const irctcUrl = `https://www.irctc.co.in/nget/train-search`;
+        const confirmtktUrl = `https://www.confirmtkt.com/train-details/${t.train_number}`;
+        const railYatriUrl = `https://www.railyatri.in/train-enquiry/${t.train_number}`;
         return `
         <div class="flight-result-card ${agenticState.selections.train?.id === t.id ? 'selected' : ''}"
              onclick="selectTrain('${t.id}')" data-id="${t.id}" style="cursor:pointer">
@@ -526,9 +611,9 @@ function renderTrainResults(trains) {
                     <div class="flight-city">${t.destination}</div>
                 </div>
                 <div class="flight-price-col">
-                    <div class="flight-price">₹${t.price.toLocaleString()}</div>
+                    <div class="flight-price" style="color:var(--success);font-weight:700;font-size:1.1rem">₹${t.price.toLocaleString()}</div>
                     <div style="font-size:0.65rem;color:var(--text-3)">${t.train_class} class</div>
-                    <div style="font-size:0.65rem;color:var(--${availClass})">${t.availability}</div>
+                    <div style="font-size:0.65rem;color:var(--${availClass});font-weight:600">${t.availability}</div>
                 </div>
             </div>
             <div class="flight-meta" style="padding:6px 12px;display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--border)">
@@ -537,7 +622,9 @@ function renderTrainResults(trains) {
                 <span class="flight-tag">⭐ ${t.rating}</span>
                 <span class="flight-tag">📅 ${t.runs_on}</span>
                 ${t.available_classes.map(c => `<span class="flight-tag" style="font-size:0.6rem">${c}</span>`).join('')}
-                <a href="${t.booking_url}" target="_blank" class="flight-tag" style="color:var(--primary);text-decoration:none">🔗 IRCTC</a>
+                <a href="${irctcUrl}" target="_blank" class="flight-tag" style="color:var(--primary);text-decoration:none;font-weight:600" onclick="event.stopPropagation()">🔗 IRCTC</a>
+                <a href="${confirmtktUrl}" target="_blank" class="flight-tag" style="color:#e74c3c;text-decoration:none" onclick="event.stopPropagation()">🔗 ConfirmTkt</a>
+                <a href="${railYatriUrl}" target="_blank" class="flight-tag" style="color:#4CAF50;text-decoration:none" onclick="event.stopPropagation()">🔗 RailYatri</a>
             </div>
         </div>`;
     }).join('');
@@ -785,6 +872,9 @@ function agenticShowConfirmation(paymentResults) {
         if (sel.cab) {
             html += `<div class="confirmation-item"><div class="confirmation-item-icon">🚗</div><div class="confirmation-item-text">${sel.cab.provider} · ${sel.cab.duration_hours}hrs · ₹${sel.cab.estimated_price.toLocaleString()}</div><div class="confirmation-item-ref">${sel.cab.id}</div></div>`;
         }
+        if (sel.train) {
+            html += `<div class="confirmation-item"><div class="confirmation-item-icon">🚂</div><div class="confirmation-item-text">${sel.train.train_name} #${sel.train.train_number} · ${sel.train.departure} → ${sel.train.arrival} · ₹${sel.train.price.toLocaleString()}</div><div class="confirmation-item-ref">${sel.train.id}</div></div>`;
+        }
         if (!html) {
             html = '<div class="confirmation-item"><div class="confirmation-item-icon">🗺️</div><div class="confirmation-item-text">Itinerary confirmed (no bookings added)</div></div>';
         }
@@ -874,6 +964,10 @@ window.generateChatResponse = async function(userMsg) {
     if (/(book|search|find)\s*(a\s+)?(flight|plane)/i.test(lower)) {
         agenticSearchFlights();
         return '✈️ I\'m searching for flights now! Check the booking wizard above.';
+    }
+    if (/(book|search|find)\s*(a\s+)?(train|rail)/i.test(lower)) {
+        agenticSearchTrains();
+        return '🚂 Searching for trains now! Check the booking wizard above.';
     }
     if (/(book|search|find)\s*(a\s+)?(hotel|stay|room|accommodation)/i.test(lower)) {
         agenticSearchHotels();
