@@ -842,23 +842,33 @@ async function generateFallbackItinerary(dest, duration, budget, startDate) {
 function generateBookings(dest) {
     const e = encodeURIComponent(dest);
     const slug = dest.toLowerCase().replace(/\s+/g, '-');
+    const ctx = window.agenticState?.context || {};
+    const origin = ctx.origin || '';
+    const originEnc = encodeURIComponent(origin);
+    const startDate = ctx.startDate || '';
+    const endDate = ctx.endDate || '';
     return {
         hotels: [
-            { name: `Google Hotels — ${dest}`, rating: 4.7, price_per_night: 'Compare All', amenities: ['All Hotels', 'Price Compare'], photo: '', booking_url: `https://www.google.com/travel/hotels/${e}`, platform: 'google' },
-            { name: `Booking.com — ${dest}`, rating: 4.5, price_per_night: 'Browse', amenities: ['WiFi', 'Free Cancel'], photo: '', booking_url: `https://www.booking.com/searchresults.html?ss=${e}`, platform: 'booking' },
-            { name: `MakeMyTrip Hotels`, rating: 4.3, price_per_night: 'Browse', amenities: ['Best Deals', 'EMI Options'], photo: '', booking_url: `https://www.makemytrip.com/hotels/hotel-listing/?city=${e}`, platform: 'makemytrip' },
+            { name: `Google Hotels — ${dest}`, rating: 4.7, price_per_night: 'Compare All', amenities: ['All Hotels', 'Price Compare'], photo: '', booking_url: `https://www.google.com/travel/hotels/${e}?dates=${startDate},${endDate}`, platform: 'google' },
+            { name: `Booking.com — ${dest}`, rating: 4.5, price_per_night: 'Browse', amenities: ['WiFi', 'Free Cancel'], photo: '', booking_url: `https://www.booking.com/searchresults.html?ss=${e}&checkin=${startDate}&checkout=${endDate}`, platform: 'booking' },
+            { name: `MakeMyTrip Hotels`, rating: 4.3, price_per_night: 'Browse', amenities: ['Best Deals', 'EMI Options'], photo: '', booking_url: `https://www.makemytrip.com/hotels/hotel-listing/?city=${e}&checkin=${startDate}&checkout=${endDate}`, platform: 'makemytrip' },
+            { name: `Goibibo — ${dest}`, rating: 4.2, price_per_night: 'Browse', amenities: ['Deals', 'Price Match'], photo: '', booking_url: `https://www.goibibo.com/hotels/hotels-in-${slug}/`, platform: 'goibibo' },
         ],
         flights: [
-            { airline: 'Google Flights', price: 'Compare', departure: 'All', arrival: 'All', duration: 'Best Price', booking_url: `https://www.google.com/travel/flights?q=flights+to+${e}`, platform: 'google' },
+            { airline: 'Google Flights', price: 'Compare', departure: origin || 'Any', arrival: dest, duration: 'Best Price', booking_url: `https://www.google.com/travel/flights?q=flights+from+${originEnc}+to+${e}+on+${startDate}`, platform: 'google' },
             { airline: 'Skyscanner', price: 'Compare', departure: 'Flexible', arrival: 'Multi-airline', duration: 'Cheapest', booking_url: `https://www.skyscanner.co.in/transport/flights-to/${slug}/`, platform: 'skyscanner' },
+            { airline: 'MakeMyTrip Flights', price: 'Compare', departure: origin || 'Any', arrival: dest, duration: 'All Airlines', booking_url: `https://www.makemytrip.com/flight/search?itinerary=${originEnc}-${e}-${startDate}&tripType=O&paxType=A-1_C-0_I-0&cabinClass=E`, platform: 'makemytrip' },
+            { airline: 'Cleartrip', price: 'Compare', departure: origin || 'Any', arrival: dest, duration: 'Best Deals', booking_url: `https://www.cleartrip.com/flights/${origin ? origin.toLowerCase().replace(/\s+/g,'-') + '-to-' : ''}${slug}-${startDate}/`, platform: 'cleartrip' },
         ],
         restaurants: [
             { name: `Zomato — ${dest}`, rating: 4.6, price_range: '₹-₹₹₹₹', cuisine: 'All Cuisines', photo: '', booking_url: `https://www.zomato.com/${slug}/restaurants`, platform: 'zomato' },
             { name: `Google — Top Rated`, rating: 4.8, price_range: '₹₹₹', cuisine: 'Best Rated', photo: '', booking_url: `https://www.google.com/maps/search/restaurants+in+${e}`, platform: 'google' },
+            { name: `Swiggy — ${dest}`, rating: 4.4, price_range: '₹-₹₹₹', cuisine: 'Delivery + Dine', photo: '', booking_url: `https://www.swiggy.com/city/${slug}`, platform: 'swiggy' },
         ],
         cabs: [
-            { type: 'Uber', price: '₹150-500/ride', features: ['AC', 'GPS'], rating: 4.3, booking_url: `https://m.uber.com/looking`, platform: 'uber' },
+            { type: 'Uber', price: '₹150-500/ride', features: ['AC', 'GPS', 'UPI Pay'], rating: 4.3, booking_url: `https://m.uber.com/looking`, platform: 'uber' },
             { type: 'Ola Cabs', price: '₹100-400/ride', features: ['AC', 'Multiple Options'], rating: 4.1, booking_url: `https://www.olacabs.com/`, platform: 'ola' },
+            { type: 'Rapido', price: '₹50-200/ride', features: ['Bike', 'Auto', 'Quick'], rating: 4.0, booking_url: `https://www.rapido.bike/`, platform: 'rapido' },
         ]
     };
 }
@@ -902,7 +912,7 @@ function renderItinerary(itin, dest) {
                 ${[1,2,3,4,5].map(s => `<span class="star ${s <= 3 ? 'active' : ''}" onclick="rateActivity(${day.day},${i},${s})">★</span>`).join('')}
               </div>
               <button class="view-media-btn" onclick="openMediaModal(${day.day - 1},${i})"><i class="fas fa-images"></i> Details</button>
-              <a href="https://www.youtube.com/results?search_query=${encodeURIComponent(act.name)}+travel+guide" target="_blank" class="video-link-btn"><i class="fab fa-youtube"></i></a>
+              <a href="https://www.youtube.com/results?search_query=${encodeURIComponent(act.name + ' ' + dest)}+travel+vlog" target="_blank" class="video-link-btn"><i class="fab fa-youtube"></i></a>
               <a href="https://www.google.com/maps/search/?api=1&query=${act.lat},${act.lon}" target="_blank" class="view-media-btn" style="background:var(--grad-primary);text-decoration:none"><i class="fas fa-map-marker-alt"></i> Map</a>
             </div>
           </div>
@@ -947,8 +957,8 @@ function renderBookings(dest) {
     if (!c) return;
     const bookings = generateBookings(dest);
 
-    const platformIcons = { google: 'fab fa-google', booking: 'fas fa-bed', makemytrip: 'fas fa-plane', skyscanner: 'fas fa-plane', zomato: 'fas fa-utensils', uber: 'fas fa-car', ola: 'fas fa-taxi' };
-    const platformColors = { google: '#4285f4', booking: '#003580', makemytrip: '#eb5b2d', skyscanner: '#0770e3', zomato: '#e23744', uber: '#000000', ola: '#35b44c' };
+    const platformIcons = { google: 'fab fa-google', booking: 'fas fa-bed', makemytrip: 'fas fa-plane', skyscanner: 'fas fa-plane', zomato: 'fas fa-utensils', uber: 'fas fa-car', ola: 'fas fa-taxi', goibibo: 'fas fa-hotel', swiggy: 'fas fa-utensils', cleartrip: 'fas fa-plane', rapido: 'fas fa-motorcycle' };
+    const platformColors = { google: '#4285f4', booking: '#003580', makemytrip: '#eb5b2d', skyscanner: '#0770e3', zomato: '#e23744', uber: '#000000', ola: '#35b44c', goibibo: '#ec5b24', swiggy: '#fc8019', cleartrip: '#e74c3c', rapido: '#ffc107' };
 
     let html = `<div class="section-title">🎫 Booking Options</div>
     <div class="tabs" id="bookingTabs">
@@ -1145,24 +1155,61 @@ function loadInstagramReels(dest) {
     const empty = document.getElementById('instaEmpty');
     if (!grid) return;
     if (empty) empty.style.display = 'none';
-    const places = [
-        { name: `${dest} Old Quarter`, desc: `Most photogenic streets in ${dest}.`, tags: [`#${dest.toLowerCase().replace(/\s/g, '')}gems`], likes: '245K', saves: '78K', neighborhood: dest, bestTime: 'Golden hour', type: 'photo_spot' },
-        { name: `${dest} Sunset Point`, desc: `Best sunset views.`, tags: [`#${dest.toLowerCase().replace(/\s/g, '')}sunset`], likes: '189K', saves: '56K', neighborhood: dest, bestTime: 'Sunset', type: 'viewpoint' },
-        { name: `${dest} Local Market`, desc: `Authentic local market.`, tags: [`#${dest.toLowerCase().replace(/\s/g, '')}market`], likes: '156K', saves: '45K', neighborhood: dest, bestTime: 'Morning', type: 'cultural' }
+    
+    // Location-specific viral content with real search queries
+    const destSlug = dest.toLowerCase().replace(/\s+/g, '');
+    const destEnc = encodeURIComponent(dest);
+    
+    // Get itinerary activities for location-specific suggestions
+    const itinPlaces = [];
+    if (state.itinerary?.days) {
+        state.itinerary.days.forEach(day => {
+            (day.activities || []).forEach(act => {
+                if (act.name) itinPlaces.push(act.name);
+            });
+        });
+    }
+    
+    // Build location-specific content cards
+    const spotNames = itinPlaces.length >= 3 ? itinPlaces.slice(0, 3) : [
+        `${dest} Top Attractions`, `${dest} Food Street`, `${dest} Hidden Spot`
     ];
+    
+    const places = spotNames.map((name, idx) => {
+        const viralTags = [`#${destSlug}`, `#${destSlug}travel`, `#explore${destSlug}`, '#incredibleindia', '#travelgram'];
+        const likes = ['312K', '245K', '189K', '156K', '134K'][idx % 5];
+        const saves = ['95K', '78K', '56K', '45K', '38K'][idx % 5];
+        const times = ['Golden hour', 'Morning', 'Sunset', 'Evening', 'Afternoon'][idx % 5];
+        const types = ['photo_spot', 'cultural', 'viewpoint', 'food', 'landmark'][idx % 5];
+        return {
+            name,
+            desc: `Trending reel location in ${dest}. Must-visit spot curated from viral travel content.`,
+            tags: viralTags.slice(0, 3),
+            likes, saves,
+            neighborhood: dest,
+            bestTime: times,
+            type: types,
+            searchQuery: `${name} ${dest} travel vlog`
+        };
+    });
+    
     grid.innerHTML = places.map(p => `
         <div class="discovery-card reel-card">
-            <div class="discovery-card-img reel-img"><div class="reel-gradient"></div><div class="discovery-card-platform instagram"><i class="fab fa-instagram"></i> Reel</div></div>
+            <div class="discovery-card-img reel-img"><div class="reel-gradient"></div><div class="discovery-card-platform instagram"><i class="fab fa-instagram"></i> Viral Reel</div></div>
             <div class="discovery-card-body">
                 <div class="discovery-card-title">${p.name}</div>
                 <div class="discovery-card-desc">${p.desc}</div>
-                <div class="discovery-card-stats"><span>❤️ ${p.likes}</span><span>🔖 ${p.saves}</span></div>
+                <div class="discovery-card-stats"><span>❤️ ${p.likes}</span><span>🔖 ${p.saves}</span><span>📍 ${p.neighborhood}</span></div>
                 <div class="discovery-card-tags">${p.tags.map(t => `<span class="discovery-tag">${t}</span>`).join('')}</div>
-                <a href="https://www.google.com/search?q=${encodeURIComponent(p.name)}+${dest}&tbm=isch" target="_blank" class="reel-action-btn google-btn"><i class="fab fa-google"></i> Photos</a>
+                <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
+                    <a href="https://www.instagram.com/explore/tags/${destSlug}/" target="_blank" class="reel-action-btn" style="background:#E1306C;color:white;padding:4px 10px;border-radius:6px;text-decoration:none;font-size:0.72rem"><i class="fab fa-instagram"></i> Reels</a>
+                    <a href="https://www.google.com/search?q=${encodeURIComponent(p.name)}+${destEnc}&tbm=isch" target="_blank" class="reel-action-btn google-btn"><i class="fab fa-google"></i> Photos</a>
+                    <a href="https://www.youtube.com/results?search_query=${encodeURIComponent(p.searchQuery)}" target="_blank" class="reel-action-btn" style="background:#FF0000;color:white;padding:4px 10px;border-radius:6px;text-decoration:none;font-size:0.72rem"><i class="fab fa-youtube"></i> Vlogs</a>
+                </div>
             </div>
         </div>
     `).join('');
-    // Fetch real photos
+    // Fetch real photos for each card
     places.forEach(async (p, idx) => {
         const photo = await getRealPhoto(p.name, dest, '');
         if (photo) {
@@ -1177,21 +1224,35 @@ function loadYouTubeHiddenGems(dest) {
     const empty = document.getElementById('ytEmpty');
     if (!grid) return;
     if (empty) empty.style.display = 'none';
+    
+    const destEnc = encodeURIComponent(dest);
+    
+    // Location-specific YouTube content with real search links
     const videos = [
-        { name: `${dest} Hidden Gems Guide`, desc: `Complete guide to hidden gems.`, channel: 'Travel Guide', views: '890K', duration: '18:30' },
-        { name: `${dest} on a Budget`, desc: `Budget tips and cheap eats.`, channel: 'Budget Travel', views: '567K', duration: '15:45' },
+        { name: `${dest} Complete Travel Guide 2026`, desc: `Everything you need to know about visiting ${dest} - places, food, transport, budget tips.`, channel: 'Travel Guide', views: '1.2M', duration: '22:15', query: `${dest} complete travel guide 2026` },
+        { name: `${dest} Street Food Tour`, desc: `Exploring the best street food and local cuisine in ${dest}. Must-try dishes!`, channel: 'Food Ranger', views: '890K', duration: '18:30', query: `${dest} street food tour vlog` },
+        { name: `Top 10 Hidden Gems in ${dest}`, desc: `Secret spots most tourists miss. Local recommendations and off-beat experiences.`, channel: 'Hidden Gems', views: '567K', duration: '15:45', query: `${dest} hidden gems secret places` },
+        { name: `${dest} Budget Travel Guide`, desc: `How to explore ${dest} under ₹5000. Cheap stays, free attractions, budget food.`, channel: 'Budget Backpacker', views: '432K', duration: '14:20', query: `${dest} budget travel tips cheap` },
     ];
     grid.innerHTML = videos.map(v => `
         <div class="discovery-card yt-card">
-            <div class="discovery-card-img yt-thumbnail"><div class="yt-play-btn"><i class="fas fa-play"></i></div></div>
+            <div class="discovery-card-img yt-thumbnail"><div class="yt-play-btn"><i class="fas fa-play"></i></div><span style="position:absolute;bottom:8px;right:8px;background:rgba(0,0,0,0.8);color:white;padding:2px 6px;border-radius:3px;font-size:0.7rem">${v.duration}</span></div>
             <div class="discovery-card-body">
                 <div class="discovery-card-title">${v.name}</div>
                 <div class="discovery-card-desc">${v.desc}</div>
-                <div class="discovery-card-stats"><span>👁️ ${v.views} views</span></div>
-                <a href="https://www.youtube.com/results?search_query=${encodeURIComponent(v.name + ' ' + dest)}" target="_blank" class="btn btn-accent booking-link" style="font-size:0.78rem"><i class="fab fa-youtube"></i> Watch</a>
+                <div class="discovery-card-stats"><span>👁️ ${v.views} views</span><span>📺 ${v.channel}</span></div>
+                <a href="https://www.youtube.com/results?search_query=${encodeURIComponent(v.query)}" target="_blank" class="btn btn-accent booking-link" style="font-size:0.78rem;background:#FF0000;color:white"><i class="fab fa-youtube"></i> Watch on YouTube</a>
             </div>
         </div>
     `).join('');
+    // Fetch real photos for thumbnails
+    videos.forEach(async (v, idx) => {
+        const photo = await getRealPhoto(v.name.replace(/\d{4}/, '').trim(), dest, '');
+        if (photo) {
+            const thumbs = grid.querySelectorAll('.yt-thumbnail');
+            if (thumbs[idx]) { thumbs[idx].style.backgroundImage = `url('${photo}')`; thumbs[idx].style.backgroundSize = 'cover'; thumbs[idx].style.backgroundPosition = 'center'; }
+        }
+    });
 }
 
 function switchDiscoveryTab(tab, btn) {
@@ -1666,9 +1727,11 @@ function openMediaModal(dayIdx, actIdx) {
         });
     }
 
+    const destQ = encodeURIComponent(state.currentDest || '');
     document.getElementById('modalVideos').innerHTML = `
-    <a href="https://www.youtube.com/results?search_query=${q}+travel+guide" target="_blank" class="media-link-btn youtube"><i class="fab fa-youtube"></i> Travel Guide</a>
-    <a href="https://www.youtube.com/results?search_query=${q}+virtual+tour+4k" target="_blank" class="media-link-btn youtube"><i class="fas fa-vr-cardboard"></i> Virtual Tour</a>`;
+    <a href="https://www.youtube.com/results?search_query=${q}+${destQ}+travel+vlog" target="_blank" class="media-link-btn youtube"><i class="fab fa-youtube"></i> Travel Vlog</a>
+    <a href="https://www.youtube.com/results?search_query=${q}+${destQ}+virtual+tour+4k" target="_blank" class="media-link-btn youtube"><i class="fas fa-vr-cardboard"></i> Virtual Tour</a>
+    <a href="https://www.youtube.com/results?search_query=${q}+${destQ}+hidden+gems" target="_blank" class="media-link-btn youtube"><i class="fas fa-gem"></i> Hidden Gems</a>`;
 
     const mapDiv = document.getElementById('modalMapEmbed');
     mapDiv.innerHTML = act.lat && act.lon ? `<iframe src="https://www.openstreetmap.org/export/embed.html?bbox=${act.lon - 0.01},${act.lat - 0.01},${act.lon + 0.01},${act.lat + 0.01}&layer=mapnik&marker=${act.lat},${act.lon}" style="width:100%;height:100%;border:none;border-radius:var(--radius)"></iframe>` : '<p class="text-muted">Map unavailable</p>';
